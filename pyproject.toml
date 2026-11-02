@@ -1,0 +1,17 @@
+# Minimal packaging so `pip install -e .` makes `volumetric_reasoning` importable
+# from scripts/, tests/ and notebooks without sys.path hacks.
+# Runtime dependencies are managed in requirements.txt.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "volumetric-reasoning"
+version = "0.0.1"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

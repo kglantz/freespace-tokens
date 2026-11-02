@@ -1,0 +1,24 @@
+# Core numerics
+numpy
+
+# Image I/O (RGB frames, 16-bit depth PNGs)
+opencv-python
+
+# Point clouds, meshes, TSDF/mesh visualization
+open3d
+
+# Configuration files
+pyyaml
+
+# 2D plots (RGB/depth side-by-side, histograms)
+matplotlib
+
+# Progress bars for per-frame loops
+tqdm
+
+# Tests for geometric transformations on synthetic data
+pytest
+
+# Added later, when the corresponding milestone needs it:
+#   torch        (Milestone 6: vision encoder features, possibly GPU TSDF)
+#   scipy        (only if a concrete need arises, e.g. spatial transforms / KD-trees)

@@ -1,0 +1,21 @@
+# Default configuration. Copy to configs/local.yaml (git-ignored) to override
+# machine-specific values such as the dataset location.
+#
+# NOTE: dataset-specific values (modality layout, file names, depth scale) are
+# placeholders until they are verified against the real data in Milestone 1.
+
+dataset:
+  name: scannetpp
+  # Relative paths resolve against the repository root.
+  # Either place/symlink the dataset here or override in configs/local.yaml.
+  root: data/scannetpp
+  scene_id: null          # e.g. a ScanNet++ scene ID; set before running
+  modality: iphone        # to be confirmed in Milestone 1 (iPhone stream provides depth)
+
+frames:
+  start: 0
+  stride: 10              # use every N-th frame
+  max_frames: 20          # small subset for initial experiments
+
+output:
+  root: outputs           # git-ignored
