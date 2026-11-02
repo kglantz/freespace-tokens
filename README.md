@@ -25,14 +25,18 @@ The token representation, the aggregation strategy, and how to encode free space
 | Milestone | Topic | Status |
 |---|---|---|
 | 0 | Repository setup | done |
-| 1 | ScanNet++ loading and inspection | planned |
-| 2 | Depth back-projection, multi-view point clouds | planned |
-| 3 | TSDF fusion | planned |
-| 4 | Marching Cubes mesh extraction and visualization | planned |
+| 1 | ScanNet++ loading and inspection | done |
+| 2 | Depth back-projection, multi-view point clouds | done |
+| 3 | TSDF fusion | in progress: Open3D reference done, own implementation next |
+| 4 | Marching Cubes mesh extraction and visualization | in progress: meshes + metrics vs. laser scan for the reference |
 | 5 | Occupied / free / unknown classification | planned |
 | 6 | Visual feature integration and aggregation | planned |
 
-No pipeline functionality is implemented yet.
+Implemented so far: an iPhone RGB-D loader for ScanNet++ (`datasets/scannetpp.py`) with
+verified pose / intrinsics / depth conventions, a mesh depth renderer used for validation
+(`geometry/raycast.py`), depth back-projection to world-space point clouds
+(`geometry/backprojection.py`), reference TSDF fusion with Open3D (`geometry/tsdf_open3d.py`),
+mesh-vs-laser-scan metrics (`geometry/mesh_eval.py`), and notebooks 01–03 in `experiments/`.
 
 ## Repository structure
 
@@ -41,8 +45,13 @@ configs/default.yaml        Dataset path, scene, frame subset, output dir
 data/                       Local datasets (git-ignored, see data/README.md)
 experiments/                Experiment notes and scripts
 src/volumetric_reasoning/
-    datasets/               Data loaders (M1)
-    geometry/               Back-projection, TSDF, mesh extraction (M2–M5)
+    config.py               Loads configs/default.yaml + optional configs/local.yaml
+    datasets/scannetpp.py   ScanNet++ iPhone RGB-D loader (M1)
+    geometry/raycast.py     Render reference-mesh depth for validation (M1)
+    geometry/backprojection.py   Pixel -> camera -> world, multi-frame point clouds (M2)
+    geometry/tsdf_open3d.py      Reference TSDF fusion + Marching Cubes via Open3D (M3/M4)
+    geometry/mesh_eval.py        Accuracy / completeness / F-score vs. reference mesh
+    geometry/               Later: own TSDF with free/unknown space (M3, M5)
     visualization/          Image / point cloud / mesh / voxel visualization
     features/               Feature extraction and aggregation (M6)
 tests/                      Synthetic tests for geometric transformations
@@ -50,11 +59,12 @@ pyproject.toml              Makes the package installable with `pip install -e .
 requirements.txt            Runtime dependencies
 ```
 
-`scripts/` will be added with the first runnable entry point (Milestone 1).
+`scripts/` will be added when we need command-line entry points.
 
 ## Environment setup
 
-Requires Python ≥ 3.10 (tested with 3.13). Keep the repository out of cloud-synced folders
+Requires Python ≥ 3.10 (tested with 3.13). On macOS, Open3D additionally needs
+`brew install libusb`. Keep the repository out of cloud-synced folders
 (iCloud, Dropbox, OneDrive). Virtual environments break there.
 
 ```bash
@@ -76,14 +86,15 @@ separately). The data is **never committed**. Symlink it to `data/scannetpp/` or
 
 ## Running experiments
 
-Nothing is runnable yet. From Milestone 1 on, scripts in `scripts/` will take a config file,
-for example:
+Open the notebooks in `experiments/` (in order) with the `.venv` kernel (PyCharm, VS Code or Jupyter)
+and run all cells. The scene and frame subset come from `configs/default.yaml` (override in
+`configs/local.yaml`).
+
+Synthetic tests for loader and geometry helpers (no dataset needed):
 
 ```bash
-python scripts/visualize_scene.py --config configs/local.yaml   # planned
+pytest
 ```
-
-Tests (once added): `pytest`.
 
 ## References
 
