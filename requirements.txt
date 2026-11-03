@@ -10,6 +10,9 @@ lz4
 # Point clouds, meshes, TSDF/mesh visualization
 open3d
 
+# Marching Cubes for our own dense TSDF grid
+scikit-image
+
 # Configuration files
 pyyaml
 

@@ -11,3 +11,4 @@ Generated files (meshes, point clouds, plots) go to `outputs/`, which is git-ign
 | `01_scene_inspection.ipynb` | 1 | Load one scene; check RGB/depth alignment, depth statistics, trajectory, pose validation against the laser mesh |
 | `02_backprojection.ipynb` | 2 | Back-project depth to world points; multi-view alignment and error vs. depth against the laser mesh; saves a point cloud to `outputs/` |
 | `03_tsdf_open3d.ipynb` | 3–4 | Open3D TSDF fusion + Marching Cubes; renders vs. laser mesh; accuracy/completeness/F-score; voxel-size sweep (1–8 cm) |
+| `04_tsdf_free_space.ipynb` | 3, 5 | Own dense TSDF validated against Open3D; occupied/free/unknown slices; pooled voxel sizes 2–64 cm; frame count 8–276 |

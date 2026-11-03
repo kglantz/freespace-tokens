@@ -27,16 +27,17 @@ The token representation, the aggregation strategy, and how to encode free space
 | 0 | Repository setup | done |
 | 1 | ScanNet++ loading and inspection | done |
 | 2 | Depth back-projection, multi-view point clouds | done |
-| 3 | TSDF fusion | in progress: Open3D reference done, own implementation next |
+| 3 | TSDF fusion | done: Open3D reference + own dense TSDF (same accuracy) |
 | 4 | Marching Cubes mesh extraction and visualization | in progress: meshes + metrics vs. laser scan for the reference |
-| 5 | Occupied / free / unknown classification | planned |
+| 5 | Occupied / free / unknown classification | in progress: first rules, voxel-size and frame-count study |
 | 6 | Visual feature integration and aggregation | planned |
 
 Implemented so far: an iPhone RGB-D loader for ScanNet++ (`datasets/scannetpp.py`) with
 verified pose / intrinsics / depth conventions, a mesh depth renderer used for validation
 (`geometry/raycast.py`), depth back-projection to world-space point clouds
 (`geometry/backprojection.py`), reference TSDF fusion with Open3D (`geometry/tsdf_open3d.py`),
-mesh-vs-laser-scan metrics (`geometry/mesh_eval.py`), and notebooks 01–03 in `experiments/`.
+mesh-vs-laser-scan metrics (`geometry/mesh_eval.py`), our own dense TSDF with occupied / free / unknown
+classification and pooling to coarse voxels (`geometry/tsdf.py`), and notebooks 01–04 in `experiments/`.
 
 ## Repository structure
 
@@ -51,7 +52,7 @@ src/volumetric_reasoning/
     geometry/backprojection.py   Pixel -> camera -> world, multi-frame point clouds (M2)
     geometry/tsdf_open3d.py      Reference TSDF fusion + Marching Cubes via Open3D (M3/M4)
     geometry/mesh_eval.py        Accuracy / completeness / F-score vs. reference mesh
-    geometry/               Later: own TSDF with free/unknown space (M3, M5)
+    geometry/tsdf.py             Own dense TSDF, voxel states, pooling to coarse voxels (M3/M5)
     visualization/          Image / point cloud / mesh / voxel visualization
     features/               Feature extraction and aggregation (M6)
 tests/                      Synthetic tests for geometric transformations

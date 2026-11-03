@@ -184,6 +184,10 @@ class ScanNetPPIphoneScene:
         indices = list(range(start, self.num_frames, stride))
         return indices[:max_frames] if max_frames else indices
 
+    def select_uniform(self, num_frames: int) -> list[int]:
+        """`num_frames` indices spread evenly over the whole sequence (first and last included)."""
+        return np.unique(np.linspace(0, self.num_frames - 1, num_frames).round().astype(int)).tolist()
+
     def load_frames(self, indices: Sequence[int], with_rgb: bool = True) -> list[Frame]:
         frames = {
             i: Frame(
