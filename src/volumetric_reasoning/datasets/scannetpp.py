@@ -4,7 +4,7 @@ Data layout of one scene (verified on scene 3e8bba0176, ScanNet++ v2):
 
     <data_root>/data/<scene_id>/iphone/
         rgb.mkv                   H.264 video, 1920x1440, 60 fps, one video frame per frame index
-        depth.bin                 LiDAR depth, 256x192, stream of LZ4-compressed frames (see below)
+        depth.bin                 LiDAR depth, 256x192, length-prefixed compressed frames
         pose_intrinsic_imu.json   per-frame ARKit metadata, keys "frame_000000", ...
         colmap/, nerfstudio/      refined poses for a ~every-10th-frame subset (not used here)
     <data_root>/data/<scene_id>/scans/
@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import struct
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Sequence
@@ -67,17 +68,36 @@ def scale_intrinsics(K: np.ndarray, sx: float, sy: float) -> np.ndarray:
 
 
 def decode_depth_chunk(chunk: bytes) -> np.ndarray:
-    """Decompress one LZ4 block from depth.bin into a (H, W) uint16 array in mm."""
-    raw = lz4.block.decompress(chunk, uncompressed_size=DEPTH_WIDTH * DEPTH_HEIGHT * 2)
-    if len(raw) != DEPTH_WIDTH * DEPTH_HEIGHT * 2:
-        raise ValueError(f"Unexpected decompressed depth size {len(raw)}")
-    return np.frombuffer(raw, dtype="<u2").reshape(DEPTH_HEIGHT, DEPTH_WIDTH)
+    """Decode an LZ4 millimeter or raw DEFLATE float-meter frame to uint16 mm."""
+    shape = (DEPTH_HEIGHT, DEPTH_WIDTH)
+    pixels = DEPTH_WIDTH * DEPTH_HEIGHT
+    try:
+        raw = lz4.block.decompress(chunk, uncompressed_size=pixels * 2)
+    except lz4.block.LZ4BlockError:
+        pass
+    else:
+        if len(raw) == pixels * 2:
+            return np.frombuffer(raw, dtype="<u2").reshape(shape)
+
+    # ScanNet++ also stores float32 meters in raw DEFLATE blocks with the same framing.
+    decoder = zlib.decompressobj(-zlib.MAX_WBITS)
+    try:
+        raw = decoder.decompress(chunk, pixels * 4 + 1)
+    except zlib.error as exc:
+        raise ValueError("Depth chunk is neither an LZ4 uint16 frame nor a raw DEFLATE float32 frame") from exc
+    if len(raw) != pixels * 4 or not decoder.eof or decoder.unused_data:
+        raise ValueError("Invalid size or framing in raw DEFLATE depth chunk")
+    meters = np.frombuffer(raw, dtype="<f4").reshape(shape)
+    valid = np.isfinite(meters) & (meters > 0) & (meters <= np.iinfo(np.uint16).max / DEPTH_SCALE)
+    millimeters = np.zeros(shape, dtype=np.uint16)
+    millimeters[valid] = (meters[valid] * DEPTH_SCALE).astype(np.uint16)
+    return millimeters
 
 
 def index_depth_file(path: Path) -> list[tuple[int, int]]:
     """Return (byte offset, size) of every compressed frame in depth.bin.
 
-    depth.bin layout: repeated [uint32 little-endian chunk size][LZ4 block].
+    depth.bin layout: repeated [uint32 little-endian chunk size][compressed block].
     Only headers are read, so indexing is fast and allows random access later.
     """
     entries = []
@@ -155,7 +175,12 @@ class ScanNetPPIphoneScene:
         with open(self.depth_path, "rb") as f:
             f.seek(offset)
             chunk = f.read(size)
-        return decode_depth_chunk(chunk).astype(np.float32) / DEPTH_SCALE
+        if len(chunk) != size:
+            raise ValueError(f"Truncated depth frame {index} for scene {self.scene_id} at {self.depth_path}")
+        try:
+            return decode_depth_chunk(chunk).astype(np.float32) / DEPTH_SCALE
+        except ValueError as exc:
+            raise ValueError(f"Cannot decode depth frame {index} for scene {self.scene_id} at {self.depth_path}: {exc}") from exc
 
     def iter_rgb(self, indices: Sequence[int]) -> Iterator[tuple[int, np.ndarray]]:
         """Yield (index, RGB uint8 image) for increasing indices.

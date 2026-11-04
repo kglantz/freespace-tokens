@@ -1,9 +1,11 @@
 """Synthetic tests for the ScanNet++ loader helpers (no dataset needed)."""
 
 import struct
+import zlib
 
 import lz4.block
 import numpy as np
+import pytest
 
 from volumetric_reasoning.datasets.scannetpp import (
     DEPTH_HEIGHT,
@@ -40,6 +42,19 @@ def test_scale_intrinsics_maps_image_corners():
     uv_rgb = (K @ p)[:2] / p[2]
     uv_depth = (Kd @ p)[:2] / p[2]
     np.testing.assert_allclose(uv_depth, uv_rgb * s)
+
+
+def test_raw_deflate_depth_frame_preserves_units_and_rejects_truncation():
+    depth = np.full((DEPTH_HEIGHT, DEPTH_WIDTH), 1.25, dtype="<f4")
+    depth[0, :4] = [0., -1., np.nan, np.inf]
+    compressor = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+    chunk = compressor.compress(depth.tobytes()) + compressor.flush()
+
+    expected = np.full(depth.shape, 1250, dtype=np.uint16)
+    expected[0, :4] = 0
+    np.testing.assert_array_equal(decode_depth_chunk(chunk), expected)
+    with pytest.raises(ValueError, match="raw DEFLATE"):
+        decode_depth_chunk(chunk[:-1])
 
 
 def test_truncated_depth_file_is_rejected(tmp_path):

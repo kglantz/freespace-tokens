@@ -63,7 +63,12 @@ class LoRALinear(nn.Module):
 
     def forward(self, x):
         original = self.base(x)
-        residual = F.linear(F.linear(self.dropout(x.float()), self.lora_a), self.lora_b)
+        device_type = x.device.type
+        activation_dtype = (torch.get_autocast_dtype(device_type) if torch.is_autocast_enabled(device_type)
+                            else self.lora_a.dtype)
+        # Keep full-sequence dropout in the compute dtype. Autocast handles the FP32 adapter weights.
+        dropped = self.dropout(x.to(dtype=activation_dtype))
+        residual = F.linear(F.linear(dropped, self.lora_a), self.lora_b)
         return original + (residual * self.scale).to(original.dtype)
 
 
