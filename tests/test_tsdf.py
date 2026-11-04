@@ -1,78 +1,53 @@
-"""Synthetic checks for the dense TSDF and voxel classification."""
-
+"""Analytic geometry and regressions for TSDF fusion and visibility."""
 import numpy as np
+import pytest
 
 from volumetric_reasoning.geometry.tsdf import (
-    BEHIND, FREE, OCCUPIED, UNKNOWN, DenseTSDF, pool_states,
+    FREE, OCCUPIED, UNKNOWN, DenseTSDF,
 )
 
-K = np.array([[60.0, 0, 32.0], [0, 60.0, 24.0], [0, 0, 1]])
-PLANE_Z = 2.0
+K = np.array([[60., 0, 32.], [0, 60., 24.], [0, 0, 1.]])
 
 
 def make_grid():
-    # 1 m x 1 m x 3 m column in front of a camera at the origin looking along +z.
-    return DenseTSDF.from_bounds([-0.5, -0.5, 0.0], [0.5, 0.5, 3.0], voxel_size=0.05, trunc_voxels=3)
+    return DenseTSDF.from_bounds([-.5, -.5, 0], [.5, .5, 3], .05, 3)
 
 
-def integrate_plane(grid, n=1, cam_to_world=np.eye(4)):
-    depth = np.full((48, 64), PLANE_Z, dtype=np.float32)
-    for _ in range(n):
-        grid.integrate(depth, K, cam_to_world, min_depth=0.1, max_depth=4.0)
-
-
-def z_states(grid, state):
-    """States along the central column (x = y = 0) as a function of voxel-center z."""
-    i, j = grid.dims[0] // 2, grid.dims[1] // 2
-    zs = grid.origin[2] + (np.arange(grid.dims[2]) + 0.5) * grid.voxel_size
-    return zs, state[i, j]
-
-
-def test_free_surface_and_unknown_along_a_ray():
+def test_plane_surface_free_rays_and_hidden_unknown():
     g = make_grid()
-    integrate_plane(g, n=3)
-    zs, s = z_states(g, g.classify(w_min=3))
-    # Very close to the camera the column leaves the (narrow) image cone -> start at 0.5 m.
-    assert (s[(zs > 0.5) & (zs < PLANE_Z - g.voxel_size)] == FREE).all()
-    assert (s[np.abs(zs - PLANE_Z) < g.voxel_size / 2] == OCCUPIED).all()
-    assert set(s[(zs > PLANE_Z + g.voxel_size) & (zs < PLANE_Z + g.trunc)]) <= {BEHIND}
-    # Beyond the truncation band behind the surface nothing was updated: unknown, not free.
-    assert (s[zs > PLANE_Z + g.trunc + g.voxel_size] == UNKNOWN).all()
+    g.integrate(np.full((48, 64), 2., np.float32), K, np.eye(4))
+    state = g.classify()
+    z = g.origin[2] + (np.arange(g.dims[2]) + .5) * g.voxel_size
+    assert (state[10, 10, (z > .5) & (z < 1.95)] == FREE).all()
+    assert (state[:, :, z > 2.05] == UNKNOWN).all()
+    hit = np.argwhere(state == OCCUPIED)
+    assert len(hit) > 0
+    assert np.all(hit[:, 2] == 40)  # fused zero surface z=2, half-open cells
+    near = np.abs(2 - z) < g.trunc
+    np.testing.assert_allclose(g.tsdf[10, 10, near] * g.trunc, (2 - z)[near], atol=1e-5)
+    assert np.any((g.tsdf < 0) & (state == UNKNOWN))  # negative band is not measured occupancy
+    assert g.n_free.max() == g.n_hit.max() == 1  # many pixels count as one frame
 
 
-def test_tsdf_values_match_signed_distance():
-    g = make_grid()
-    integrate_plane(g)
-    zs, _ = z_states(g, g.classify(w_min=1))
-    i, j = g.dims[0] // 2, g.dims[1] // 2
-    near = np.abs(PLANE_Z - zs) < g.trunc
-    np.testing.assert_allclose(g.tsdf[i, j, near] * g.trunc, (PLANE_Z - zs)[near], atol=1e-5)
+def test_frustum_includes_negative_band_past_maximum_return_depth():
+    g = DenseTSDF.from_bounds([-.05, -.05, 3.9], [.05, .05, 4.2], .1, .8)
+    g.integrate(np.full((48, 64), 3.99, np.float32), K, np.eye(4), max_depth=4)
+    assert g.weight[0, 0, 1] == 1  # center at z=4.05: still inside mu=.08 of the hit
+    assert g.tsdf[0, 0, 1] == pytest.approx((3.99 - 4.05) / .08, abs=1e-5)
+    assert g.weight[0, 0, 2] == 0
 
 
-def test_weight_threshold_and_outside_frustum():
-    g = make_grid()
-    integrate_plane(g, n=2)
-    assert (g.classify(w_min=3) == UNKNOWN).all()  # seen only twice
-    assert (g.classify(w_min=2) != UNKNOWN).any()
-    # Voxels outside the field of view stay unknown: camera looking away (along -z).
-    g2 = make_grid()
-    flip = np.diag([1.0, -1.0, -1.0, 1.0])  # 180 deg rotation about x
-    integrate_plane(g2, n=3, cam_to_world=flip)
-    assert (g2.weight == 0).all()
+def test_invalid_depth_and_camera_looking_away():
+    for value in (0., -1., 9., np.nan, np.inf):
+        g = make_grid()
+        g.integrate(np.full((48, 64), value), K, np.eye(4))
+        assert not g.weight.any() and not g.n_free.any() and not g.n_hit.any()
+    g.integrate(np.full((48, 64), 2.), K, np.diag([1., -1., -1., 1.]))
+    assert not g.weight.any() and not g.n_free.any() and not g.n_hit.any()
 
 
-def test_invalid_depth_does_not_carve_free_space():
-    g = make_grid()
-    for _ in range(3):
-        g.integrate(np.zeros((48, 64), np.float32), K, np.eye(4))
-        g.integrate(np.full((48, 64), 9.0, np.float32), K, np.eye(4), max_depth=4.0)
-    assert (g.weight == 0).all()
-
-
-def test_pool_states():
-    s = np.full((4, 4, 4), FREE, dtype=np.uint8)
-    s[0, 0, 0] = OCCUPIED
-    s[2:, 2:, 2:] = UNKNOWN
-    p = pool_states(s, 2)
-    assert p.shape == (2, 2, 2)
-    assert p[0, 0, 0] == OCCUPIED and p[1, 1, 1] == UNKNOWN and p[1, 0, 0] == FREE
+def test_input_validation():
+    with pytest.raises(ValueError):
+        DenseTSDF.from_bounds([0, 0, 0], [0, 1, 1], .02)
+    with pytest.raises(ValueError):
+        make_grid().integrate(np.ones((3, 3)), K, np.zeros((4, 4)))

@@ -1,0 +1,158 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+\usepackage[letterpaper,margin=0.68in,columnsep=0.22in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{times}
+\usepackage{amsmath,amssymb}
+\usepackage{microtype}
+\usepackage{titlesec}
+\usepackage{cite}
+\usepackage[hidelinks]{hyperref}
+
+\setlength{\parindent}{1em}
+\setlength{\parskip}{0pt}
+\setlength{\textfloatsep}{6pt}
+\setlength{\floatsep}{5pt}
+\setlength{\intextsep}{5pt}
+
+\titleformat{\section}
+  {\bfseries\large}{\thesection.}{0.45em}{}
+\titleformat{\subsection}
+  {\bfseries\normalsize}{\thesubsection}{0.45em}{}
+\titlespacing*{\section}{0pt}{6pt}{2pt}
+\titlespacing*{\subsection}{0pt}{4pt}{2pt}
+
+\pagestyle{plain}
+\hypersetup{
+  pdftitle={FreeSpace Tokens: Explicit Free and Unknown Space for Multi-View Spatial Reasoning},
+  pdfauthor={Dung Pham and Kai Glantz}
+}
+
+\title{\vspace{-1.2em}\bfseries
+FreeSpace Tokens: Explicit Free and Unknown Space\\
+for Multi-View Spatial Reasoning}
+\author{Dung Pham\\Kai Glantz}
+\date{02.11.2026}
+
+\begin{document}
+\maketitle
+\vspace{-2.2em}
+
+\begin{abstract}
+Surface-based 3D scene representations leave vision-language models (VLMs) to infer where free space exists, how far it extends, and which regions remain unobserved. We propose FreeSpace Tokens, which explicitly encode observed-free and unknown 3D volumes as input tokens for the language decoder. Given posed RGB-D observations, we combine TSDF reconstruction with depth-ray visibility to identify occupied surfaces, observed free space, and unknown regions. Visual features assigned to the same surface voxel are fused by max pooling, while neighboring free and unknown voxels are merged separately into cuboidal regions. Each region token encodes its state, 3D position, and spatial dimensions and is supplied alongside surface visual tokens using a common 3D positional encoding. We will fine-tune a pretrained VLM on the ScanNet++ subset of ViCA-322K and compare models receiving surface tokens alone or additional free and unknown tokens under matched training and input conditions. These experiments will test whether explicit volumetric context improves general spatial reasoning and assess the individual contributions of free and unknown tokens, particularly under incomplete observations.
+\end{abstract}
+
+\section{Motivation}
+
+Free space geometry describes the extent and arrangement of the unoccupied regions between surfaces in a 3D scene. Understanding the dimensions and connectivity of these regions can support VLM spatial question answering in tasks such as estimating distances and room size, planning routes between locations, and identifying unoccupied regions relative to surrounding objects.
+
+Existing approaches train VLMs on question-answer pairs about free space, associate visual features with 3D locations, or encode occupancy as tokens for the language decoder. RoboSpatial~\cite{robospatial} trains VLMs on question-answer pairs that require identifying unoccupied locations and determining whether a specified object can fit in a candidate region. Occ-VLM~\cite{occvlm} uses a predicted occupancy map to associate image features with 3D locations. From posed RGB images, it samples features corresponding to occupied voxels and supplies them to the decoder with 3D positional encodings. SparseOccVLA~\cite{sparseoccvla} compresses multi-camera driving images into a few hundred tokens trained to represent occupied scene geometry, which replace image-patch tokens as the language decoder’s input for question answering. OctLLM~\cite{octllm} supplies a language decoder with octree tokens describing sampled object surfaces. Its empty cell codes indicate absent or pruned surface geometry, rather than volumes observed to be free through sensor measurements.
+
+To the best of our knowledge, existing methods either teach VLMs about free space implicitly through question-answer supervision or use occupancy to encode occupied surface geometry for the language decoder, without explicitly describing the surrounding free volumes. The decoder must therefore infer where free volumes exist and how far they extend from the spatial arrangement of the represented surfaces.
+
+We therefore propose FreeSpace Tokens, which explicitly encode observed free and unknown 3D volumes as input tokens for the LLM decoder. We use volumetric TSDF reconstruction to construct a 3D occupancy map from posed RGB-D observations, then compress observed free and unknown space into regions. Each region’s type, 3D position, and spatial dimensions are encoded as a token and supplied directly to the LLM decoder alongside visual tokens from observed surfaces. This gives the decoder explicit descriptions of where free space exists, how far it extends, and which regions remain unobserved. We hypothesize that making this volumetric context directly accessible improves VLM spatial understanding by reducing the need to infer it from surface features alone.
+
+\section{Research Questions}
+
+We aim to investigate three research questions:
+
+\textbf{RQ1: Explicit Free and Unknown Space Representation.} Does providing the decoder with free and unknown tokens alongside visual tokens from observed surfaces improve VLM spatial reasoning compared to a matched baseline receiving only those visual tokens?
+
+\textbf{RQ2: Free vs. Unknown Space.} What are the individual contributions of observed-free and unknown tokens, particularly when scene observations are incomplete?
+
+\section{Method}
+
+\subsection{TSDF Reconstruction and Spatial States}
+
+Given posed RGB-D views, we reconstruct a shared volumetric representation using TSDF fusion~\cite{curless}. We initially use ScanNet++~\cite{scannetpp}, which provides RGB-D observations and camera calibration. For voxel $v$, each valid view $t$ contributes a truncated signed distance $d_t(v)$, obtained from the difference between measured depth and the voxel's projected depth, and an integration weight $w_t(v)$. We fuse these observations as
+\begin{equation}
+F(v)=\frac{\sum_t w_t(v)d_t(v)}{\sum_t w_t(v)},\qquad
+W(v)=\sum_t w_t(v).
+\end{equation}
+We locate the reconstructed surface where $F$ changes sign between neighboring voxels with $W>0$, and label voxels intersecting this surface as occupied. For each surface voxel observed in a depth image, we trace the ray from the camera towards the measured surface and mark the traversed voxels as observed free. After combining all views, voxels with neither free space nor surface evidence are labeled unknown. 
+
+\subsection{Surface Features and Max Pooling}
+
+We extract image-patch features $f_i$ using a frozen pretrained vision encoder and back-project them into the shared 3D coordinate system using depth and camera calibration. Features associated with the same surface voxel are combined using channel-wise max pooling:
+\begin{equation}
+\tilde f_v[k]=\max_{i\in\mathcal I(v)} f_i[k],
+\end{equation}
+where $\mathcal I(v)$ contains the observations assigned to voxel $v$ and $k$ indexes feature channels. After pooling the image features assigned to voxel $v$, we associate the resulting visual token with the voxel's center coordinates $p_v = (x_v, y_v, z_v)$.
+
+\subsection{Free and Unknown Tokens for the Decoder}
+
+The first implementation uses a uniform grid over a small scene region. Before tokenization, we merge neighboring free voxels and neighboring unknown voxels into axis-aligned cuboidal regions, each containing only one state. Each resulting region produces a token encoding its center $p_j$, spatial extent $s_j=(w_j,h_j,d_j)$, and state $a_j\in\{\mathrm{free},\mathrm{unknown}\}$. Lightweight projections map visual features and these region descriptors to the decoder's embedding dimension:
+\begin{equation}
+\begin{aligned}
+z_v^{\mathrm{vis}}&=P_{\mathrm{vis}}(\tilde f_v\Vert\phi(p_v))+e_{\mathrm{vis}},\\
+z_j^{\mathrm{vol}}&=P_{\mathrm{vol}}(\phi(p_j)\Vert s_j)+e_{a_j},
+\end{aligned}
+\end{equation}
+where $\Vert$ denotes concatenation, $\phi$ is a shared learned 3D position embedding, and $e_{\mathrm{vis}}$, $e_{\mathrm{free}}$, and $e_{\mathrm{unknown}}$ are distinct trainable type embeddings. Coordinates use a common reference frame and fixed metric scale.
+
+We use a common 3D rotary positional encoding for all scene tokens, with its three positional axes assigned to world-space $(x,y,z)$. Surface tokens use voxel centers, and free/unknown tokens use region centers. Region extent is encoded in token content. All scene tokens together with the question are passed to the VLM's language decoder, which generates the answer.
+
+\section{Experimental Plan}
+
+\paragraph{Training.}
+We fine-tune a pretrained Qwen3-VL model on the ScanNet++ subset of ViCA-322K~\cite{vica}, pairing its existing question-answer annotations with the corresponding posed RGB-D observations. For each training example, we construct surface visual tokens and free/unknown region tokens from the selected input views. We freeze the vision encoder and base decoder weights, training the token projections, position/type embeddings, and lightweight decoder LoRA adapters using cross-entropy on the answer tokens. The matched surface-only baseline uses the same initialization, QA data, input views, and training schedule. Training, validation, and evaluation scenes remain disjoint.
+
+\paragraph{Baseline Comparisons.}
+The primary control uses the same reconstruction, max-pooled surface features, positional encoding, and training recipe, but no free / unknown tokens. We compare surface-only, surface + free, surface + unknown, and surface + free + unknown models. All variants receive the same input frames, depth, and poses.
+
+\section{Expected Contributions and Risks}
+
+The primary expected contribution is FreeSpace Tokens, a representation that explicitly supplies observed-free and unknown 3D volumes to a VLM's language decoder alongside surface visual information. Controlled experiments will determine whether these tokens improve spatial understanding and clarify the separate roles of known emptiness and missing observations. 
+
+The main risk is that explicit volume tokens may provide limited gains over surface-based representations that already encode 3D positions. Depth or pose errors may also incorrectly mark space as free, while coarse regions may lose narrow gaps or small obstacles. We therefore begin with provided RGB-D and poses, validate state assignments on simple geometry, and preserve fine cells at mixed boundaries. Volume tokens also increase decoder cost before compression, making the accuracy-efficiency tradeoff an essential part of the evaluation.
+
+\begin{thebibliography}{9}
+
+\bibitem{robospatial}
+C.~H. Song, V. Blukis, J. Tremblay, S. Tyree, Y. Su,
+and S. Birchfield.
+\newblock RoboSpatial: Teaching Spatial Understanding to 2D
+and 3D Vision-Language Models for Robotics.
+\newblock In \emph{CVPR}, pages 15768--15780, 2025.
+
+\bibitem{occvlm}
+J. Li, Z. Fang, Y. Liu, and L. Du.
+\newblock Occ-VLM: Occupancy Grounded Vision Language Model
+for Indoor Scene Understanding.
+\newblock \href{https://arxiv.org/abs/2606.19776}
+{arXiv:2606.19776}, 2026.
+
+\bibitem{sparseoccvla}
+C. Dang, J. Wang, G. Li, Z. Hou, Z. You, H. Ye,
+J. Ma, L. Chen, and Y. Wang.
+\newblock SparseOccVLA: Bridging Occupancy and Vision-Language
+Models via Sparse Queries for Unified 4D Scene Understanding
+and Planning.
+\newblock \href{https://arxiv.org/abs/2601.06474}
+{arXiv:2601.06474}, 2026.
+
+\bibitem{octllm}
+R. Dan, S.-T. Wei, P. Xiong, W. Zhang, Y. Mu,
+and P.-S. Wang.
+\newblock Octrees as an Explicit 3D Language.
+\newblock \href{https://arxiv.org/abs/2610.02388}
+{arXiv:2610.02388}, 2026.
+
+\bibitem{curless}
+B. Curless and M. Levoy.
+\newblock A Volumetric Method for Building Complex Models
+from Range Images.
+\newblock In \emph{SIGGRAPH}, pages 303--312, 1996.
+
+\bibitem{scannetpp}
+C. Yeshwanth, Y.-C. Liu, M. Nie{\ss}ner, and A. Dai.
+\newblock ScanNet++: A High-Fidelity Dataset of 3D Indoor Scenes.
+\newblock In \emph{ICCV}, pages 12--22, 2023.
+
+\bibitem{vica}
+Q. Feng.
+\newblock Visuospatial Cognitive Assistant.
+\newblock \href{https://arxiv.org/abs/2505.12312}
+{arXiv:2505.12312}, 2025.
+
+\end{thebibliography}
+\end{document}

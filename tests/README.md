@@ -1,13 +1,15 @@
 # Tests
 
-Run with:
+Install the CPU dependencies and run the tests from the repository root:
 
 ```bash
-pytest
+python -m pip install -r requirements.txt
+python -m pip install -e .
+python -m pytest -q
 ```
 
-Planned: synthetic tests for geometric transformations (back-projection with a
-known camera, camera-to-world pose application, TSDF on simple shapes), so that
-coordinate conventions are verified independently of the dataset.
+Tests cover camera conventions, depth decoding, TSDF fusion, visibility, state assignment,
+and exact cuboid partitioning. The ScanNet++ integration tests use local data when available.
 
-_No tests yet._
+For the real-scene diagnostics, see the [three-state map](../documents/stage_one_validation.md)
+and [cuboid validation](../documents/cuboid_validation.md) reports.

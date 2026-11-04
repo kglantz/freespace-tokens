@@ -5,7 +5,6 @@ import numpy as np
 from volumetric_reasoning.geometry.backprojection import (
     backproject_pixels,
     depth_to_points,
-    frames_to_points,
     pixel_centers,
     project_points,
     transform_points,
@@ -76,17 +75,3 @@ def test_two_views_of_same_point_agree():
         recovered.append(transform_points(backproject_pixels(uv[:, 0], uv[:, 1], z, K), T))
     np.testing.assert_allclose(recovered[0], X[None], atol=1e-9)
     np.testing.assert_allclose(recovered[1], X[None], atol=1e-9)
-
-
-def test_frames_to_points_combines_and_labels():
-    class F:
-        def __init__(self, index, t):
-            self.index, self.depth, self.K_depth = index, np.full((4, 6), 1.0), K
-            self.cam_to_world = np.eye(4)
-            self.cam_to_world[:3, 3] = t
-            self.rgb = None
-
-    pts, cols, ids = frames_to_points([F(0, [0, 0, 0]), F(7, [1, 0, 0])])
-    assert pts.shape == (48, 3) and cols is None
-    assert (ids[:24] == 0).all() and (ids[24:] == 7).all()
-    np.testing.assert_allclose(pts[24:] - pts[:24], np.tile([1, 0, 0], (24, 1)))

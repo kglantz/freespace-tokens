@@ -13,8 +13,6 @@ Conventions used throughout the project:
 
 from __future__ import annotations
 
-from typing import Sequence
-
 import numpy as np
 
 
@@ -73,42 +71,3 @@ def depth_to_points(
     if cam_to_world is not None:
         points = transform_points(points, cam_to_world)
     return points, mask
-
-
-def frames_to_points(
-    frames: Sequence,
-    min_depth: float = 0.0,
-    max_depth: float = np.inf,
-    pixel_stride: int = 1,
-) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
-    """Combine several frames into one world-space point set.
-
-    Args:
-        frames: objects with `.depth`, `.K_depth`, `.cam_to_world` and optionally `.rgb`
-            (e.g. `datasets.scannetpp.Frame`).
-        pixel_stride: use every n-th pixel in both directions (intrinsics are adjusted).
-
-    Returns:
-        points (N, 3) world coordinates, colors (N, 3) float in [0, 1] or None,
-        frame_ids (N,) index of the source frame (useful to color by view).
-    """
-    import cv2  # local import: only needed for color lookup
-
-    all_pts, all_cols, all_ids = [], [], []
-    for f in frames:
-        depth, K = f.depth, f.K_depth
-        if pixel_stride > 1:
-            # Subsampling with a stride keeps pixel centers at stride*(i + 0.5) - 0.5 in the
-            # original image; the simplest exact approach is to keep the original pixel grid.
-            keep = np.zeros(depth.shape, dtype=bool)
-            keep[pixel_stride // 2 :: pixel_stride, pixel_stride // 2 :: pixel_stride] = True
-            depth = np.where(keep, depth, 0.0)
-        pts, mask = depth_to_points(depth, K, f.cam_to_world, min_depth, max_depth)
-        all_pts.append(pts)
-        all_ids.append(np.full(len(pts), f.index))
-        if getattr(f, "rgb", None) is not None:
-            rgb_small = cv2.resize(f.rgb, depth.shape[::-1], interpolation=cv2.INTER_AREA)
-            all_cols.append(rgb_small[mask].astype(np.float32) / 255.0)
-
-    colors = np.concatenate(all_cols) if len(all_cols) == len(all_pts) else None
-    return np.concatenate(all_pts), colors, np.concatenate(all_ids)

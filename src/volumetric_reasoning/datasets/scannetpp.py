@@ -81,12 +81,17 @@ def index_depth_file(path: Path) -> list[tuple[int, int]]:
     Only headers are read, so indexing is fast and allows random access later.
     """
     entries = []
+    file_size = Path(path).stat().st_size
     with open(path, "rb") as f:
         while True:
             header = f.read(4)
-            if len(header) < 4:
+            if not header:
                 break
+            if len(header) != 4:
+                raise ValueError(f"Truncated depth header at byte {f.tell() - len(header)}")
             (size,) = struct.unpack("<I", header)
+            if size == 0 or f.tell() + size > file_size:
+                raise ValueError(f"Invalid/truncated depth chunk at byte {f.tell()}")
             entries.append((f.tell(), size))
             f.seek(size, 1)
     return entries
@@ -122,12 +127,6 @@ class ScanNetPPIphoneScene:
         if n_video != self.num_frames:
             raise ValueError(f"{n_video} video frames but {self.num_frames} pose entries")
 
-    # --- paths ------------------------------------------------------------
-    @property
-    def mesh_path(self) -> Path:
-        """Laser-scan reference mesh. For evaluation only, never a pipeline input."""
-        return self.scene_dir / "scans" / "mesh_aligned_0.05.ply"
-
     # --- per-frame metadata -------------------------------------------------
     def _entry(self, index: int) -> dict:
         return self._meta[f"frame_{index:06d}"]
@@ -150,6 +149,8 @@ class ScanNetPPIphoneScene:
     # --- images -------------------------------------------------------------
     def load_depth(self, index: int) -> np.ndarray:
         """(192, 256) float32 depth in meters; 0 = invalid."""
+        if not 0 <= index < self.num_frames:
+            raise IndexError(f"Frame index {index} outside [0, {self.num_frames})")
         offset, size = self._depth_index[index]
         with open(self.depth_path, "rb") as f:
             f.seek(offset)
@@ -181,11 +182,15 @@ class ScanNetPPIphoneScene:
 
     # --- convenience --------------------------------------------------------
     def select_frames(self, start: int = 0, stride: int = 1, max_frames: int | None = None) -> list[int]:
+        if not 0 <= start < self.num_frames or stride < 1 or (max_frames is not None and max_frames < 0):
+            raise ValueError("Require valid start, positive stride and nonnegative max_frames")
         indices = list(range(start, self.num_frames, stride))
-        return indices[:max_frames] if max_frames else indices
+        return indices[:max_frames] if max_frames is not None else indices
 
     def select_uniform(self, num_frames: int) -> list[int]:
         """`num_frames` indices spread evenly over the whole sequence (first and last included)."""
+        if not 1 <= num_frames <= self.num_frames:
+            raise ValueError(f"Requested frame count must be in [1, {self.num_frames}]")
         return np.unique(np.linspace(0, self.num_frames - 1, num_frames).round().astype(int)).tolist()
 
     def load_frames(self, indices: Sequence[int], with_rgb: bool = True) -> list[Frame]:

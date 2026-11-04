@@ -1,25 +1,12 @@
-"""Dense TSDF fusion with explicit occupied / free / unknown classification.
+"""Projective TSDF fusion and separate depth-ray visibility evidence.
 
-Integration is the KinectFusion rule (projective signed distance, truncation, running
-average with constant weights). What this module adds is an explicit interpretation of
-every voxel in a bounded volume, in the spirit of Curless & Levoy's unseen / empty /
-near-surface states.
+TSDF samples live at voxel centers and use d - z, normalized by truncation mu.
+This projective residual is not an Euclidean distance or an occupancy label.
+Voxel occupancy uses the observed zero set of multilinear TSDF interpolation.
+Visibility uses depth-ray traversal.
 
-Per frame, for every voxel whose center projects into the image:
-
-    z   = depth of the voxel center in the camera
-    d   = measured depth at the pixel containing the projection
-    sdf = d - z
-
-    d invalid or d > max_depth  -> no update (no evidence)
-    sdf >=  mu                  -> D <- avg(D, +1),       W += 1, n_free += 1   (in front of surface)
-    -mu < sdf < mu              -> D <- avg(D, sdf / mu), W += 1, n_surf += 1   (near surface)
-    sdf <= -mu                  -> no update (behind the surface: occluded)
-
-D is stored normalized by the truncation distance mu, so D * mu is a metric distance.
-
-Conventions: OpenCV camera axes, camera-to-world poses, pixel (u, v) covers
-[u, u+1) x [v, v+1). Voxel (i, j, k) has its center at origin + (i + 0.5, j + 0.5, k + 0.5) * voxel_size.
+Conventions: OpenCV axes, camera-to-world poses, pixel (u, v) covers
+[u, u+1) x [v, v+1); voxel centers are origin + (index + 0.5) * voxel_size.
 """
 
 from __future__ import annotations
@@ -29,9 +16,15 @@ from typing import Sequence
 
 import numpy as np
 
-# Voxel states.
-UNKNOWN, FREE, OCCUPIED, BEHIND = 0, 1, 2, 3
-STATE_NAMES = {UNKNOWN: "unknown", FREE: "free", OCCUPIED: "occupied", BEHIND: "behind surface"}
+from .backprojection import depth_to_points
+from .visibility import ray_voxel_evidence
+from .states import zero_surface_mask
+
+# Version 3: occupied comes from the observed TSDF zero set, not raw endpoints.
+STATE_SCHEMA_VERSION = 3
+STATE_DEFINITION = 'observed_tsdf_zero_surface_and_depth_ray_visibility_v1'
+UNKNOWN, FREE, OCCUPIED = 0, 1, 2
+STATE_NAMES = {UNKNOWN: "unknown", FREE: "free", OCCUPIED: "occupied"}
 
 
 @dataclass
@@ -40,21 +33,32 @@ class DenseTSDF:
     dims: tuple[int, int, int]  # number of voxels along x, y, z
     voxel_size: float
     trunc: float  # truncation distance mu in meters
+    free_margin: float = 0.02  # Euclidean guard before each measured endpoint
 
     def __post_init__(self):
         self.origin = np.asarray(self.origin, dtype=np.float64)
+        if (self.origin.shape != (3,) or not np.isfinite(self.origin).all()
+                or len(self.dims) != 3 or any(int(n) != n or n <= 0 for n in self.dims)
+                or not np.isfinite(self.voxel_size) or self.voxel_size <= 0
+                or not np.isfinite(self.trunc) or self.trunc <= 0
+                or not np.isfinite(self.free_margin) or self.free_margin < 0):
+            raise ValueError("Grid requires finite origin, positive dimensions/scale and nonnegative free margin")
         self.dims = tuple(int(n) for n in self.dims)
         self.tsdf = np.ones(self.dims, dtype=np.float32)  # normalized by trunc; 1 = "far in front"
         self.weight = np.zeros(self.dims, dtype=np.float32)
-        self.n_free = np.zeros(self.dims, dtype=np.uint16)
-        self.n_surf = np.zeros(self.dims, dtype=np.uint16)
+        self.n_free = np.zeros(self.dims, dtype=np.uint32)
+        self.n_hit = np.zeros(self.dims, dtype=np.uint32)
 
     # --- construction --------------------------------------------------------
     @classmethod
-    def from_bounds(cls, lo, hi, voxel_size: float, trunc_voxels: float = 4.0) -> "DenseTSDF":
+    def from_bounds(cls, lo, hi, voxel_size: float, trunc_voxels: float = 4.0,
+                    free_margin: float = 0.02) -> "DenseTSDF":
         lo, hi = np.asarray(lo, float), np.asarray(hi, float)
+        if (lo.shape != (3,) or hi.shape != (3,) or not np.isfinite([lo, hi]).all()
+                or np.any(hi <= lo) or not np.isfinite(voxel_size) or voxel_size <= 0):
+            raise ValueError("Bounds must be finite and increasing; voxel_size must be positive")
         dims = np.ceil((hi - lo) / voxel_size).astype(int)
-        return cls(lo, tuple(dims), voxel_size, trunc_voxels * voxel_size)
+        return cls(lo, tuple(dims), voxel_size, trunc_voxels * voxel_size, free_margin)
 
     @property
     def num_voxels(self) -> int:
@@ -87,8 +91,19 @@ class DenseTSDF:
 
     def integrate(self, depth: np.ndarray, K: np.ndarray, cam_to_world: np.ndarray,
                   min_depth: float = 0.1, max_depth: float = 4.0, weight: float = 1.0) -> None:
+        depth, K, cam_to_world = validate_observation(depth, K, cam_to_world, min_depth, max_depth)
+        if not np.isfinite(weight) or weight <= 0:
+            raise ValueError("Integration weight must be finite and positive")
+        endpoints, _ = depth_to_points(depth, K, cam_to_world, min_depth, max_depth)
+        if not len(endpoints):
+            return
+        free, hits = ray_voxel_evidence(cam_to_world[:3, 3], endpoints, self.origin,
+                                       self.dims, self.voxel_size, self.free_margin)
+        self.n_free.ravel()[free] += 1
+        self.n_hit.ravel()[hits] += 1
         h, w = depth.shape
-        sl = self._frustum_block(K, cam_to_world, w, h, max_depth)
+        # Valid returns at max_depth still support the negative truncation band.
+        sl = self._frustum_block(K, cam_to_world, w, h, max_depth + self.trunc)
         if sl is None:
             return
         centers = self.voxel_centers(sl).reshape(-1, 3)
@@ -108,14 +123,13 @@ class DenseTSDF:
 
         d = np.zeros(z.shape, dtype=np.float32)
         d[inside] = depth[vi[inside], ui[inside]]
-        valid = inside & (d > min_depth) & (d <= max_depth)
+        valid = inside & np.isfinite(d) & (d > min_depth) & (d <= max_depth)
         sdf = d - z
         update = valid & (sdf > -self.trunc)  # sdf <= -mu: occluded, no update
         if not update.any():
             return
 
         tsdf_obs = np.minimum(sdf / self.trunc, 1.0).astype(np.float32)
-        free_obs = sdf >= self.trunc
 
         # Flat indices into the full grid for the updated voxels of this block.
         local = np.nonzero(update)[0]
@@ -127,87 +141,53 @@ class DenseTSDF:
         D_old = self.tsdf[gi, gj, gk]
         self.tsdf[gi, gj, gk] = (W_old * D_old + weight * tsdf_obs[local]) / (W_old + weight)
         self.weight[gi, gj, gk] = W_old + weight
-        f = free_obs[local]
-        self.n_free[gi[f], gj[f], gk[f]] += 1
-        self.n_surf[gi[~f], gj[~f], gk[~f]] += 1
 
     def integrate_frames(self, frames: Sequence, min_depth: float = 0.1, max_depth: float = 4.0) -> None:
         for f in frames:
             self.integrate(f.depth, f.K_depth, f.cam_to_world, min_depth, max_depth)
 
     # --- interpretation ----------------------------------------------------------
-    def classify(self, w_min: float = 3.0) -> np.ndarray:
-        """uint8 state per voxel: UNKNOWN, FREE, OCCUPIED (surface inside voxel) or BEHIND.
+    def surface_mask(self) -> np.ndarray:
+        """Cells intersecting the observed TSDF zero surface (W>0); no mesh."""
+        return zero_surface_mask(self.tsdf, self.weight)
 
-        A voxel contains the surface if the (averaged) distance to it is at most half the voxel
-        diagonal. BEHIND = observed, just behind a surface (inside the truncation band) - likely
-        inside a solid object; whether to treat it as occupied is an open design question.
+    def classify(self) -> np.ndarray:
+        """Proposal states: observed zero surface > ray-traversed free > unknown.
+
+        Raw endpoint counts are retained as diagnostics, but do not determine
+        occupancy. Negative TSDF alone does not establish occupancy or free
+        space. Labels are finite-resolution observations, not solid completion.
         """
-        dist = self.tsdf * self.trunc
-        half_diag = 0.5 * np.sqrt(3.0) * self.voxel_size
-        known = self.weight >= w_min
         state = np.full(self.dims, UNKNOWN, dtype=np.uint8)
-        state[known & (dist > half_diag)] = FREE
-        state[known & (np.abs(dist) <= half_diag)] = OCCUPIED
-        state[known & (dist < -half_diag)] = BEHIND
+        state[self.n_free > 0] = FREE
+        state[self.surface_mask()] = OCCUPIED
         return state
 
-    def extract_mesh(self, w_min: float = 3.0):
-        """Marching Cubes on the zero level set; voxels with weight < w_min are excluded."""
-        import open3d as o3d
-        from skimage.measure import marching_cubes
+    @property
+    def conflicting_evidence(self) -> np.ndarray:
+        """Cells with both traversal and endpoint support (also possible within one frame)."""
+        return (self.n_free > 0) & (self.n_hit > 0)
 
-        verts_idx, faces, _, _ = marching_cubes(self.tsdf, level=0.0, allow_degenerate=False)
 
-        # Keep only triangles whose vertices lie in cubes with all 8 corner voxels observed
-        # (weight >= w_min). Unobserved voxels keep their initial +1, so next to the negative
-        # band behind a surface they would create a fake "back side" surface (e.g. a second
-        # floor below the real one). Note: skimage's `mask` argument does not enforce this.
-        i0 = np.clip(np.floor(verts_idx).astype(int), 0, np.array(self.dims) - 2)
-        wmin = np.full(len(verts_idx), np.inf, dtype=np.float32)
-        for dx in (0, 1):
-            for dy in (0, 1):
-                for dz in (0, 1):
-                    wmin = np.minimum(wmin, self.weight[i0[:, 0] + dx, i0[:, 1] + dy, i0[:, 2] + dz])
-        faces = faces[(wmin[faces] >= w_min).all(axis=1)]
 
-        # marching_cubes returns coordinates in index space; index i is the voxel center.
-        verts = self.origin + (verts_idx + 0.5) * self.voxel_size
-        mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(verts), o3d.utility.Vector3iVector(faces))
-        mesh.remove_unreferenced_vertices()
-        mesh.compute_vertex_normals()
-        return mesh
+def validate_observation(depth, K, cam_to_world, min_depth, max_depth):
+    """Validate the pinhole/rigid-pose assumptions used during fusion."""
+    depth = np.asarray(depth)
+    K = np.asarray(K, np.float64)
+    T = np.asarray(cam_to_world, np.float64)
+    if depth.ndim != 2 or not all(depth.shape):
+        raise ValueError("Depth must be a nonempty 2-D array")
+    if (K.shape != (3, 3) or not np.isfinite(K).all() or K[0, 0] <= 0 or K[1, 1] <= 0
+            or not np.allclose(K[2], [0, 0, 1]) or abs(K[0, 1]) > 1e-8 or abs(K[1, 0]) > 1e-8):
+        raise ValueError("K must be a finite pinhole intrinsic matrix without skew")
+    if (T.shape != (4, 4) or not np.isfinite(T).all() or not np.allclose(T[3], [0, 0, 0, 1])
+            or not np.allclose(T[:3, :3].T @ T[:3, :3], np.eye(3), atol=1e-4)
+            or not np.isclose(np.linalg.det(T[:3, :3]), 1.0, atol=1e-4)):
+        raise ValueError("cam_to_world must be a finite rigid camera-to-world pose")
+    if not (np.isfinite(min_depth) and np.isfinite(max_depth) and 0 <= min_depth < max_depth):
+        raise ValueError("Depth range must be finite and satisfy 0 <= min_depth < max_depth")
+    return depth, K, T
 
 
 def count_states(state: np.ndarray) -> dict:
     return {STATE_NAMES[s]: int((state == s).sum()) for s in STATE_NAMES}
-
-
-def pool_states(state: np.ndarray, factor: int, unknown_fraction: float = 0.5) -> np.ndarray:
-    """Combine factor^3 fine voxels into one coarse voxel.
-
-    Rule (one possible choice, to be discussed):
-      occupied  if any fine voxel is OCCUPIED or BEHIND
-      unknown   else, if more than `unknown_fraction` of the fine voxels are UNKNOWN
-      free      otherwise
-    The grid is padded with UNKNOWN to a multiple of `factor`.
-    """
-    if factor == 1:
-        return state.copy()
-    pad = [(0, (-n) % factor) for n in state.shape]
-    s = np.pad(state, pad, constant_values=UNKNOWN)
-    nx, ny, nz = (n // factor for n in s.shape)
-    blocks = s.reshape(nx, factor, ny, factor, nz, factor).transpose(0, 2, 4, 1, 3, 5).reshape(nx, ny, nz, -1)
-    occ = ((blocks == OCCUPIED) | (blocks == BEHIND)).any(-1)
-    unk = (blocks == UNKNOWN).mean(-1) > unknown_fraction
-    out = np.full((nx, ny, nz), FREE, dtype=np.uint8)
-    out[unk] = UNKNOWN
-    out[occ] = OCCUPIED
-    return out
-
-
-def bounds_from_points(points: np.ndarray, margin: float = 0.1, percentile: float = 0.5):
-    """Robust axis-aligned bounds of a point cloud (ignores the most extreme outliers)."""
-    lo = np.percentile(points, percentile, axis=0) - margin
-    hi = np.percentile(points, 100 - percentile, axis=0) + margin
-    return lo, hi

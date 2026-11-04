@@ -40,3 +40,26 @@ def test_scale_intrinsics_maps_image_corners():
     uv_rgb = (K @ p)[:2] / p[2]
     uv_depth = (Kd @ p)[:2] / p[2]
     np.testing.assert_allclose(uv_depth, uv_rgb * s)
+
+
+def test_truncated_depth_file_is_rejected(tmp_path):
+    import pytest
+    for payload in (b'\x01', struct.pack('<I', 10) + b'short', struct.pack('<I', 0)):
+        path = tmp_path / 'bad.bin'
+        path.write_bytes(payload)
+        with pytest.raises(ValueError):
+            index_depth_file(path)
+
+
+def test_frame_selection_validates_counts_and_zero_limit():
+    import pytest
+    from volumetric_reasoning.datasets.scannetpp import ScanNetPPIphoneScene
+    scene = object.__new__(ScanNetPPIphoneScene)
+    scene.num_frames = 10
+    assert scene.select_frames(max_frames=0) == []
+    assert scene.select_uniform(3) == [0, 4, 9]
+    for n in (0, -1, 11):
+        with pytest.raises(ValueError):
+            scene.select_uniform(n)
+    with pytest.raises(ValueError):
+        scene.select_frames(stride=0)

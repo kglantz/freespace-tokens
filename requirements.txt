@@ -1,33 +1,6 @@
-# Core numerics
+# CPU geometry and regression tests. GPU dependencies are in requirements-gpu.txt.
 numpy
-
-# Image I/O and video decoding (iPhone RGB is an H.264 .mkv)
-opencv-python
-
-# ScanNet++ iPhone depth.bin is a stream of LZ4-compressed frames
+opencv-python-headless
 lz4
-
-# Point clouds, meshes, TSDF/mesh visualization
-open3d
-
-# Marching Cubes for our own dense TSDF grid
-scikit-image
-
-# Configuration files
-pyyaml
-
-# 2D plots (RGB/depth side-by-side, histograms)
 matplotlib
-
-# Progress bars for per-frame loops
-tqdm
-
-# Tests for geometric transformations on synthetic data
 pytest
-
-# Jupyter kernel for notebooks in experiments/ (works with PyCharm / VS Code / Jupyter)
-ipykernel
-
-# Added later, when the corresponding milestone needs it:
-#   torch        (Milestone 6: vision encoder features, possibly GPU TSDF)
-#   scipy        (only if a concrete need arises, e.g. spatial transforms / KD-trees)
