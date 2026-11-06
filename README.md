@@ -1,46 +1,49 @@
 # FreeSpace Tokens
 
-FreeSpace Tokens tests whether explicit observed-free and unknown volumes help a vision-language
-model answer spatial questions about indoor scenes. Posed ScanNet++ RGB-D views produce a
-three-state grid using TSDF zero crossings and depth-ray visibility. A frozen DINOv2 encoder
-supplies max-pooled surface features. Homogeneous free and unknown cells are packed separately
-into cuboids. Qwen3-VL receives these tokens with world-coordinate 3D positions and is fine-tuned
-with LoRA on the ScanNet++ subset of ViCA-322K.
+Explicit free and unknown 3D space as input tokens for a vision-language model
+([research proposal](documents/FreeSpace_Tokens_Research_Proposal.tex)).
 
-- [Research proposal](documents/FreeSpace_Tokens_Research_Proposal.tex)
-- [GPU runbook](documents/GPU_RUNBOOK.md) for download, preprocessing, training, and evaluation
-- [Three-state map validation](documents/stage_one_validation.md)
-- [Cuboid validation](documents/cuboid_validation.md)
+## Data representation
 
-On a Linux CUDA host, install the GPU environment from the repo root:
+1. **Reconstruction (2 cm).** 32 posed iPhone RGB-D frames from ScanNet++. ARKit poses are refined
+   by multi-view ICP and fused into a sparse VoxelHashing map (2 cm voxels, 8³ blocks). Every voxel
+   is labelled occupied (TSDF zero surface), free (traversed by a depth ray) or unknown.
+2. **Tokens (16 cm blocks).** One surface token per block containing surface (position = mean of
+   its occupied voxels). Free blocks and unknown blocks inside the room are merged separately into
+   axis-aligned boxes (max 1.5 m per side); one token per box (center, size, type).
+
+On scene `1ada7a0617`: 4,556 surface + 460 free + 195 unknown = 5,211 scene tokens.
+
+## Scripts
+
+Run from the repository root, in order:
+
+| Script | Does | Output (`outputs/<scene>/`) |
+|---|---|---|
+| `scripts/step1_reconstruction.py` | Frames → ICP → 2 cm map; mesh vs. laser scan | `step1_reconstruction/` |
+| `scripts/step2_labels_vs_gt.py` | Occupied/free/unknown labels vs. laser ground truth | `step2_labels/` |
+| `scripts/step3_tokens.py` | Block tokens and token counts | `step3_tokens/` |
 
 ```bash
-bash scripts/setup_gpu.sh
-source .venv-gpu/bin/activate
+python -m venv venv && venv/bin/pip install -r requirements.txt
+venv/bin/python scripts/step1_reconstruction.py --scene 1ada7a0617
+venv/bin/python scripts/step2_labels_vs_gt.py --scene 1ada7a0617
+venv/bin/python scripts/step3_tokens.py --scene 1ada7a0617
 ```
 
-The four matched variants are surface only, surface + free, surface + unknown, and surface + both.
-The evaluation uses scenes held out from both training and validation. Geometry and small CPU
-model fixtures have been exercised. Full pretrained CUDA execution and learned accuracy are
-pending.
+## Code
 
-| Location | Purpose |
+| Module (`src/volumetric_reasoning/`) | Purpose |
 |---|---|
-| `data_download/` | ScanNet++ downloader and token-free config template |
-| `src/volumetric_reasoning/state_map.py` | TSDF fusion and three-state map export |
-| `src/volumetric_reasoning/region_tokens.py` | Exact cuboid compression and token geometry |
-| `src/volumetric_reasoning/features/` | Frozen encoder, backprojection, and feature pooling |
-| `src/volumetric_reasoning/prototype/` | QA and scene preparation, training, inference, and comparison |
-| `scripts/` | GPU setup, ROI demo, and ablation entry points |
-| `tests/` | Geometry and data regression tests |
+| `datasets/scannetpp.py` | iPhone RGB-D frames, ARKit poses, frame selection |
+| `datasets/scannetpp_laser.py` | Laser panoramas and scanner registration (ground truth only) |
+| `geometry/backprojection.py` | Depth → 3D points |
+| `geometry/pose_refinement.py` | Multi-view ICP |
+| `geometry/block_map.py` | VoxelHashing TSDF fusion with free/unknown labels, mesh extraction |
+| `geometry/visibility.py` | Ray traversal (free space) |
+| `geometry/zero_surface.py` | Occupied voxels from the TSDF zero surface |
+| `geometry/block_tokens.py` | Block labels, surface tokens, box merging |
+| `geometry/labels.py` | Label constants |
+| `render3d.py` | Shared 3D rendering for figures |
 
-To run the CPU tests:
-
-```bash
-python -m pip install -r requirements.txt
-python -m pip install -e .
-python -m pytest -q
-```
-
-See [dataset layout](data/README.md) for the raw RGB-D inputs. Datasets, feature caches, checkpoints,
-and predictions are local artifacts.
+Data layout and download: [data/README.md](data/README.md).

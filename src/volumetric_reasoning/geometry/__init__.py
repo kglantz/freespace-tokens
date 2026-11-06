@@ -1,1 +1,1 @@
-"""Depth backprojection, TSDF fusion, ray visibility, and cuboid partitioning."""
+"""Back-projection, VoxelHashing TSDF fusion with free/unknown labels, pose refinement, block tokens."""

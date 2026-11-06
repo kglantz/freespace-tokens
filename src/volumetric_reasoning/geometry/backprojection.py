@@ -34,13 +34,6 @@ def backproject_pixels(u: np.ndarray, v: np.ndarray, depth: np.ndarray, K: np.nd
     return np.stack([x, y, depth], axis=-1)
 
 
-def project_points(points_cam: np.ndarray, K: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Inverse of `backproject_pixels`: camera-space (N, 3) -> continuous (u, v) and depth z."""
-    z = points_cam[:, 2]
-    uv = (points_cam @ K.T)[:, :2] / z[:, None]
-    return uv, z
-
-
 def transform_points(points: np.ndarray, T: np.ndarray) -> np.ndarray:
     """Apply a 4x4 rigid transform to row-stacked points (N, 3)."""
     return points @ T[:3, :3].T + T[:3, 3]

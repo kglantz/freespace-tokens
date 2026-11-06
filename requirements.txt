@@ -1,6 +1,8 @@
-# CPU geometry and regression tests. GPU dependencies are in requirements-gpu.txt.
 numpy
+scipy
 opencv-python-headless
 lz4
+open3d
+scikit-image
 matplotlib
-pytest
+plotly

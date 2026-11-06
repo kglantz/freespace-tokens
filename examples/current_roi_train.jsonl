@@ -1,3 +1,0 @@
-{"id":"roi_geometry_x","scene_id":"1ada7a0617","region_id":"1ada7a0617","scope":"roi","task":"geometry_debug","question":"What is the x-axis extent of the entire mapped region in metres? Answer with a number.","answer":"2.02"}
-{"id":"roi_geometry_y","scene_id":"1ada7a0617","region_id":"1ada7a0617","scope":"roi","task":"geometry_debug","question":"What is the y-axis extent of the entire mapped region in metres? Answer with a number.","answer":"2.02"}
-{"id":"roi_geometry_z","scene_id":"1ada7a0617","region_id":"1ada7a0617","scope":"roi","task":"geometry_debug","question":"What is the z-axis extent of the entire mapped region in metres? Answer with a number.","answer":"2.42"}

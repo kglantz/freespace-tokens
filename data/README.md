@@ -1,20 +1,22 @@
 # Local data
 
-The pipeline takes a ScanNet++ download root containing this layout:
+The scripts read ScanNet++ scenes from `--data-root` (default `data`), laid out as:
 
 ```text
-<download-root>/
+<data-root>/
   data/
     <scene-id>/
       iphone/
-        rgb.mkv
-        depth.bin
-        pose_intrinsic_imu.json
+        rgb.mkv                   RGB video
+        depth.bin                 LiDAR depth
+        pose_intrinsic_imu.json   ARKit poses and intrinsics
+        colmap/images.txt         COLMAP-registered frames (used for frame selection)
+      scans/
+        mesh_aligned_0.05.ply     laser mesh (evaluation only)
+      panocam/                    laser panoramas: depth, azim, elev (evaluation only)
 ```
 
-Pass the outer directory as `--data-root`. For example, `--data-root data/scannetpp` reads scenes
-under `data/scannetpp/data/`. The [GPU runbook](../documents/GPU_RUNBOOK.md) shows how to select
-ViCA-annotated scenes and download just these three assets. Access requires a token from the
+Download with `data_download/download_scannetpp.py`; access requires a token from the
 [ScanNet++ portal](https://scannetpp.mlsg.cit.tum.de/scannetpp/).
 
-Only this README is tracked under `data/`. Keep dataset files and generated downloader configs here.
+Only this README is tracked under `data/`.
