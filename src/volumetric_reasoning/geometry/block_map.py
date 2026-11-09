@@ -113,6 +113,17 @@ class BlockMap:
         b1 = np.ceil((hi + margin) / ext).astype(np.int64)
         return cls(b0 * ext, np.maximum(b1 - b0, 1), voxel_size, block_size, **kw)
 
+    @classmethod
+    def from_frames(cls, frames, voxel_size=0.02, block_size=8, trunc=0.08, free_margin=0.02,
+                    min_depth=0.1, max_depth=4.0, verbose=False) -> "BlockMap":
+        """Map over the frames' depth points (0.1-99.9 percentiles, robust to flying pixels), fused."""
+        pts = np.concatenate([depth_to_points(f.depth, f.K_depth, f.cam_to_world, min_depth, max_depth)[0]
+                              for f in frames])
+        bm = cls.from_bounds(np.percentile(pts, 0.1, axis=0), np.percentile(pts, 99.9, axis=0), voxel_size,
+                             block_size, margin=0.1, trunc=trunc, free_margin=free_margin)
+        bm.fuse(frames, min_depth, max_depth, verbose=verbose)
+        return bm
+
     @property
     def block_extent(self) -> float:
         return self.h * self.B

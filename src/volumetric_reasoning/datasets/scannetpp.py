@@ -6,7 +6,6 @@ Data layout of one scene (ScanNet++ v2):
         rgb.mkv                   H.264 video, 1920x1440, 60 fps, one video frame per frame index
         depth.bin                 LiDAR depth, 256x192, length-prefixed compressed frames
         pose_intrinsic_imu.json   per-frame ARKit metadata, keys "frame_000000", ...
-        colmap/images.txt         frames registered by COLMAP (~every 10th); used for frame selection
     <data_root>/data/<scene_id>/scans/
         mesh_aligned_0.05.ply     laser-scan mesh (evaluation only, never an input)
 
@@ -146,16 +145,8 @@ class ScanNetPPIphoneScene:
 
     # --- frame selection ----------------------------------------------------
     def select_frames(self, num_frames: int) -> list[int]:
-        """`num_frames` indices spread uniformly over the COLMAP-registered frames.
-
-        COLMAP registered ~every 10th frame of the capture; drawing from this subset skips
-        frames that could not be registered (e.g. motion blur).
-        """
-        names = [l.split()[9] for l in (self.iphone_dir / "colmap" / "images.txt").read_text().splitlines()
-                 if l and not l.startswith("#")][::2]  # every second line holds 2-D observations
-        registered = sorted(int(Path(n).stem.split("_")[-1]) for n in names)
-        picks = np.unique(np.linspace(0, len(registered) - 1, num_frames).round().astype(int))
-        return [registered[i] for i in picks]
+        """`num_frames` indices spread uniformly over the whole capture."""
+        return np.unique(np.linspace(0, self.num_frames - 1, num_frames).round().astype(int)).tolist()
 
     # --- images -------------------------------------------------------------
     def load_depth(self, index: int) -> np.ndarray:

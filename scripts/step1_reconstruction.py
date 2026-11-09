@@ -1,7 +1,7 @@
-"""Step 1: 32 iPhone RGB-D frames -> multi-view ICP -> 2 cm VoxelHashing map -> comparison with laser.
+"""Step 1: 32 iPhone RGB-D frames -> 2 cm VoxelHashing map -> comparison with laser.
 
-  * 32 frames spread uniformly over the COLMAP-registered frames of the capture,
-  * ARKit poses refined by leave-one-out point-to-plane ICP between the frames (no ground truth),
+  * 32 frames spread uniformly over the capture,
+  * ARKit poses (ScanNet++ aligned_pose), used as is,
   * fused into a BlockMap (2 cm voxels, 8^3 blocks) with occupied / free / unknown labels,
   * Marching Cubes mesh scored against the FARO laser mesh and rendered side by side.
 
@@ -24,9 +24,7 @@ import open3d as o3d
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from volumetric_reasoning.datasets.scannetpp import ScanNetPPIphoneScene  # noqa: E402
-from volumetric_reasoning.geometry.backprojection import depth_to_points  # noqa: E402
 from volumetric_reasoning.geometry.block_map import BlockMap  # noqa: E402
-from volumetric_reasoning.geometry.pose_refinement import refine_poses  # noqa: E402
 
 
 # --- evaluation against the laser mesh --------------------------------------------
@@ -94,7 +92,7 @@ def save_figure(ours, reference, m, args, n_frames, path):
         for col, mesh in enumerate((ours_c, ref_c)):
             axes[row, col].imshow(render(mesh, center, eye), cmap="gray", vmin=0, vmax=1)
             axes[row, col].axis("off")
-    axes[0, 0].set_title(f"Ours: {n_frames} iPhone RGB-D frames, ARKit poses + multi-view ICP\n"
+    axes[0, 0].set_title(f"Ours: {n_frames} iPhone RGB-D frames, ARKit poses\n"
                          f"2 cm TSDF (VoxelHashing, 8³ blocks), Marching Cubes", fontsize=12)
     axes[0, 1].set_title("Ground truth: FARO laser-scan mesh", fontsize=12)
     fig.suptitle(f"Scene {args.scene}: reconstruction vs. ground truth (ceiling removed above z = {args.z_cut:g} m)",
@@ -134,30 +132,22 @@ def main():
     frame_ids = scene.select_frames(args.frames)
     frames = scene.load_frames(frame_ids, with_rgb=False)
     print(f"{args.scene}: frames {frame_ids}", flush=True)
-    poses, icp = refine_poses(frames, min_depth=args.min_depth, max_depth=args.max_depth, verbose=True)
-    for f, T in zip(frames, poses):
-        f.cam_to_world = T
 
-    # Grid extent from our own depth points (robust to flying pixels); blocks are world-aligned.
-    pts = np.concatenate([depth_to_points(f.depth, f.K_depth, f.cam_to_world, args.min_depth, args.max_depth)[0]
-                          for f in frames])
-    bm = BlockMap.from_bounds(np.percentile(pts, 0.1, axis=0), np.percentile(pts, 99.9, axis=0), args.voxel_size,
-                              args.block_size, margin=0.1, trunc=args.truncation, free_margin=args.free_margin)
-    bm.fuse(frames, args.min_depth, args.max_depth, verbose=True)
+    bm = BlockMap.from_frames(frames, args.voxel_size, args.block_size, args.truncation, args.free_margin,
+                              args.min_depth, args.max_depth, verbose=True)
     cats, states = bm.classify()
     mesh = bm.extract_mesh(min_weight=1.0)
-    bm.save(out / "block_map.npz", frame_indices=np.array(frame_ids),
-            cam_to_world=np.array([f.cam_to_world for f in frames]))
+    bm.save(out / "block_map.npz", frame_indices=np.array(frame_ids))
     o3d.io.write_triangle_mesh(str(out / "mesh.ply"), mesh)
 
     reference = o3d.io.read_triangle_mesh(str(args.data_root / "data" / args.scene / "scans" / "mesh_aligned_0.05.ply"))
     reference.compute_vertex_normals()
     m = metrics(mesh, reference)
     save_figure(mesh, reference, m, args, len(frame_ids), out / "reconstruction_vs_gt.png")
-    summary = {"scene": args.scene, "frame_indices": frame_ids, "poses": "ARKit aligned_pose + multi-view ICP",
+    summary = {"scene": args.scene, "frame_indices": frame_ids, "poses": "ARKit aligned_pose",
                "settings": {k: getattr(args, k) for k in ("voxel_size", "block_size", "truncation", "free_margin",
                                                            "min_depth", "max_depth")},
-               "mesh_vs_laser": m, "icp": icp, "map": bm.summary(cats, states), "seconds": round(time.time() - t0, 1)}
+               "mesh_vs_laser": m, "map": bm.summary(cats, states), "seconds": round(time.time() - t0, 1)}
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(f"F@5cm {m['fscore_5cm']:.3f}  P {m['precision_5cm']:.3f}  R {m['recall_5cm']:.3f}  "
           f"F@2cm {m['fscore_2cm']:.3f}\nWrote {out} ({summary['seconds']} s)")

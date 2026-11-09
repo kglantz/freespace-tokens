@@ -258,10 +258,7 @@ def main():
     args.grid_blocks = lab.shape
     free_layers = np.flatnonzero((lab == FREE).any(axis=(0, 1)))
     room_floor = float(bm.origin[2] + free_layers[0] * tok.block_size_m)
-    np.savez_compressed(out / "tokens.npz", block_size_m=tok.block_size_m, origin=tok.origin,
-                        surface_block=tok.surface_block, surface_position=tok.surface_position,
-                        box_start=tok.box_start, box_stop=tok.box_stop, box_type=tok.box_type,
-                        box_center=tok.box_center, box_size=tok.box_size)
+    tok.save(out / "tokens.npz")
     save_figure(tok, rows, args, room_floor, out / "tokens.png")
     save_html(tok, args, room_floor, out / "tokens_3d.html")
     save_slices(tok, args, out / "tokens_slices.png")

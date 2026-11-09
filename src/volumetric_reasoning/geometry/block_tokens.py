@@ -148,6 +148,12 @@ class SceneTokens:
         return {"surface": s, "free": f, "unknown": u, "surface_only": s, "surface_free": s + f,
                 "surface_unknown": s + u, "surface_both": s + f + u}
 
+    def save(self, path) -> None:
+        np.savez_compressed(path, block_size_m=self.block_size_m, origin=self.origin,
+                            surface_block=self.surface_block, surface_position=self.surface_position,
+                            box_start=self.box_start, box_stop=self.box_stop, box_type=self.box_type,
+                            box_center=self.box_center, box_size=self.box_size)
+
 
 def tokenize(state, B, origin, h, cap_m: float | None = 1.5, unknown: str = "room") -> tuple[SceneTokens, np.ndarray]:
     """Scene tokens for one block size, box size cap (meters, None = no cap) and unknown scope."""

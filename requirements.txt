@@ -6,3 +6,7 @@ open3d
 scikit-image
 matplotlib
 plotly
+torch
+torchvision
+transformers==5.22.2
+peft==0.21.2
