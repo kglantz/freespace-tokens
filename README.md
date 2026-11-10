@@ -1,104 +1,76 @@
-# freespace-tokens
+# FreeSpace Tokens
 
-Volumetric scene representations that encode **occupied, free, and unknown space** as a
-basis for spatial visual tokens in vision-language models (VLMs).
+Explicit free and unknown 3D space as input tokens for a vision-language model
+([research proposal](documents/FreeSpace_Tokens_Research_Proposal.tex)).
 
-Student research project, Visual Computing & AI group, TUM (supervisor: Prof. Matthias Nießner).
+## Data representation
 
-## Motivation
+1. **Reconstruction (2 cm).** 32 iPhone RGB-D frames from ScanNet++ (spread uniformly over the
+   capture) with their ARKit poses, fused
+   into a sparse VoxelHashing map (2 cm voxels, 8³ blocks). Every voxel is labelled occupied (TSDF
+   zero surface), free (traversed by a depth ray) or unknown.
+2. **Tokens (16 cm blocks).** One surface token per block containing surface (position = mean of
+   its occupied voxels; feature = mean of the frozen Qwen3-VL patch features of its depth pixels). Free blocks and unknown blocks inside the room are merged separately into
+   axis-aligned boxes (max 1.5 m per side); one token per box (center, size, type).
 
-VLMs process images as sets of visual tokens. When several posed RGB-D views of a scene
-are available, simply concatenating per-image tokens ignores that many of them observe the
-same 3D region. We investigate organizing visual information in a **shared 3D volumetric
-representation** instead:
+On scene `1ada7a0617`: 5,052 surface + 509 free + 213 unknown = 5,774 scene tokens. Over the 50 QA
+scenes: 1,505–19,077 scene tokens (median 5,105).
 
-1. Fuse posed RGB-D frames into a voxel grid (TSDF fusion; Curless & Levoy 1996, KinectFusion 2011).
-2. Distinguish occupied, free, and unknown space. Unobserved voxels are *not* treated as free.
-3. Assign image features to voxels and aggregate multi-view observations (mean / max / learned, to be compared).
-4. Use voxel centers as positional information for downstream VLM reasoning.
+## Scripts
 
-The token representation, the aggregation strategy, and how to encode free space are
-**open research questions**.
+Run from the repository root, in order:
 
-## Status
-
-| Milestone | Topic | Status |
+| Script | Does | Output (`outputs/<scene>/`) |
 |---|---|---|
-| 0 | Repository setup | done |
-| 1 | ScanNet++ loading and inspection | done |
-| 2 | Depth back-projection, multi-view point clouds | done |
-| 3 | TSDF fusion | done: Open3D reference + own dense TSDF (same accuracy) |
-| 4 | Marching Cubes mesh extraction and visualization | in progress: meshes + metrics vs. laser scan for the reference |
-| 5 | Occupied / free / unknown classification | in progress: first rules, voxel-size and frame-count study |
-| 6 | Visual feature integration and aggregation | planned |
+| `scripts/step1_reconstruction.py` | Frames → 2 cm map; mesh vs. laser scan | `step1_reconstruction/` |
+| `scripts/step2_labels_vs_gt.py` | Occupied/free/unknown labels vs. laser ground truth | `step2_labels/` |
+| `scripts/step3_tokens.py` | Block tokens and token counts | `step3_tokens/` |
 
-Implemented so far: an iPhone RGB-D loader for ScanNet++ (`datasets/scannetpp.py`) with
-verified pose / intrinsics / depth conventions, a mesh depth renderer used for validation
-(`geometry/raycast.py`), depth back-projection to world-space point clouds
-(`geometry/backprojection.py`), reference TSDF fusion with Open3D (`geometry/tsdf_open3d.py`),
-mesh-vs-laser-scan metrics (`geometry/mesh_eval.py`), our own dense TSDF with occupied / free / unknown
-classification and pooling to coarse voxels (`geometry/tsdf.py`), and notebooks 01–04 in `experiments/`.
-
-## Repository structure
-
-```text
-configs/default.yaml        Dataset path, scene, frame subset, output dir
-data/                       Local datasets (git-ignored, see data/README.md)
-experiments/                Experiment notes and scripts
-src/volumetric_reasoning/
-    config.py               Loads configs/default.yaml + optional configs/local.yaml
-    datasets/scannetpp.py   ScanNet++ iPhone RGB-D loader (M1)
-    geometry/raycast.py     Render reference-mesh depth for validation (M1)
-    geometry/backprojection.py   Pixel -> camera -> world, multi-frame point clouds (M2)
-    geometry/tsdf_open3d.py      Reference TSDF fusion + Marching Cubes via Open3D (M3/M4)
-    geometry/mesh_eval.py        Accuracy / completeness / F-score vs. reference mesh
-    geometry/tsdf.py             Own dense TSDF, voxel states, pooling to coarse voxels (M3/M5)
-    visualization/          Image / point cloud / mesh / voxel visualization
-    features/               Feature extraction and aggregation (M6)
-tests/                      Synthetic tests for geometric transformations
-pyproject.toml              Makes the package installable with `pip install -e .`
-requirements.txt            Runtime dependencies
-```
-
-`scripts/` will be added when we need command-line entry points.
-
-## Environment setup
-
-Requires Python ≥ 3.10 (tested with 3.13). On macOS, Open3D additionally needs
-`brew install libusb`. Keep the repository out of cloud-synced folders
-(iCloud, Dropbox, OneDrive). Virtual environments break there.
+Steps 1–3 study the development scene `1ada7a0617` (the only one with laser ground truth). The QA
+scenes (`data/qa/splits.json`) are built with the step-1 map and step-3 default tokens, without laser data:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install -e .
+venv/bin/python scripts/build_scenes.py --jobs 4   # -> outputs/scenes/<scene>/{block_map,tokens}.npz
+venv/bin/python scripts/extract_features.py        # -> outputs/scenes/<scene>/features_<model>.npz
 ```
 
-Activate it again in each new shell with `source .venv/bin/activate`.
+## Training and evaluation
 
-## Dataset setup
-
-We use [ScanNet++](https://scannetpp.mlsg.cit.tum.de/scannetpp/) (access must be requested
-separately). The data is **never committed**. Symlink it to `data/scannetpp/` or point
-`dataset.root` in a git-ignored `configs/local.yaml` to its location. See
-[data/README.md](data/README.md).
-
-## Running experiments
-
-Open the notebooks in `experiments/` (in order) with the `.venv` kernel (PyCharm, VS Code or Jupyter)
-and run all cells. The scene and frame subset come from `configs/default.yaml` (override in
-`configs/local.yaml`).
-
-Synthetic tests for loader and geometry helpers (no dataset needed):
+Qwen3-VL-4B decoder (frozen, LoRA on attention) reading the scene tokens in place of image tokens; answer-only
+loss; 3-D rotary positions in Qwen's image convention (see `src/volumetric_reasoning/model.py`). One run per
+variant (`surface_only`, `surface_free`, `surface_unknown`, `surface_both`), all with the same seed:
 
 ```bash
-pytest
+venv/bin/python scripts/train.py --variant surface_both --output runs/surface_both     # --train-scenes 10 for a pilot
+venv/bin/python scripts/evaluate.py --run runs/surface_both --split test
 ```
 
-## References
+Each run validates and checkpoints after every epoch (`best.pt` = best validation mean over tasks). Scores are the
+VSI-Bench metrics: option accuracy (relative distance) and mean relative accuracy (distance, size, count, room size).
 
-- B. Curless, M. Levoy. *A Volumetric Method for Building Complex Models from Range Images.* SIGGRAPH 1996.
-- S. Izadi et al. *KinectFusion: Real-time 3D Reconstruction and Interaction Using a Moving Depth Camera.* UIST 2011.
-- C. Yeshwanth et al. *ScanNet++: A High-Fidelity Dataset of 3D Indoor Scenes.* ICCV 2023.
+```bash
+python -m venv venv && venv/bin/pip install -r requirements.txt
+venv/bin/python scripts/step1_reconstruction.py --scene 1ada7a0617
+venv/bin/python scripts/step2_labels_vs_gt.py --scene 1ada7a0617
+venv/bin/python scripts/step3_tokens.py --scene 1ada7a0617
+```
+
+## Code
+
+| Module (`src/volumetric_reasoning/`) | Purpose |
+|---|---|
+| `datasets/scannetpp.py` | iPhone RGB-D frames, ARKit poses, frame selection |
+| `datasets/scannetpp_laser.py` | Laser panoramas and scanner registration (ground truth only) |
+| `geometry/backprojection.py` | Depth → 3D points |
+| `geometry/block_map.py` | VoxelHashing TSDF fusion with free/unknown labels, mesh extraction |
+| `geometry/visibility.py` | Ray traversal (free space) |
+| `geometry/zero_surface.py` | Occupied voxels from the TSDF zero surface |
+| `geometry/block_tokens.py` | Block labels, surface tokens, box merging |
+| `geometry/labels.py` | Label constants |
+| `features.py` | Frozen Qwen3-VL image features, mean-pooled per surface block |
+| `qa_dataset.py` | QA examples with scene tokens per variant; VSI-Bench scoring |
+| `model.py` | Scene-token embeddings, 3-D RoPE positions, LoRA Qwen3-VL decoder, loss, greedy decoding |
+| `evaluation.py` | Generation + scoring of a dataset |
+| `render3d.py` | Shared 3D rendering for figures |
+
+Data layout and download: [data/README.md](data/README.md).

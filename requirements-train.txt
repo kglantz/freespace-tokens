@@ -1,0 +1,7 @@
+# Training / evaluation only (GPU machine). Versions pinned: model.py relies on Qwen3-VL internals of transformers.
+numpy==2.4.6
+torch==2.15.0
+torchvision==0.29.2
+transformers==5.22.2
+tokenizers==0.23.3
+peft==0.21.2

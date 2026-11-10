@@ -1,40 +1,33 @@
 # Local data
 
-This directory is **git-ignored** (except this file). Never commit dataset files.
-
-## Setup
-
-Download ScanNet++ with the official download script (outside this repo) and symlink it here:
-
-```bash
-ln -s ~/dev/scannetpp data/scannetpp
-```
-
-Alternatively, set `dataset.root` in `configs/local.yaml` (git-ignored).
-
-## Layout (ScanNet++ v2, verified on scene `3e8bba0176`)
+The scripts read ScanNet++ scenes from `--data-root`, laid out as:
 
 ```text
-data/scannetpp/
-├── splits/          nvs_sem_train.txt, nvs_sem_val.txt, ...   (3e8bba0176 is in nvs_sem_val)
-├── metadata/        semantic / instance class lists
-└── data/<scene_id>/
-    ├── iphone/                 ← our RGB-D input
-    │   ├── rgb.mkv             H.264 video, 1920×1440, 60 fps
-    │   ├── depth.bin           LiDAR depth 256×192, uint16 mm, LZ4-compressed per frame
-    │   ├── pose_intrinsic_imu.json   per-frame ARKit intrinsics + poses ("aligned_pose")
-    │   └── colmap/, nerfstudio/      refined poses for ~every 10th frame (unused for now)
-    ├── scans/                  ← laser-scan reference, evaluation only
-    │   ├── mesh_aligned_0.05.ply           reference mesh
-    │   ├── mesh_aligned_0.05_semantic.ply  mesh with semantic labels
-    │   └── segments.json, segments_anno.json
-    ├── dslr/                   fisheye still images + COLMAP poses (no depth)
-    └── panocam/                panoramas with depth from fixed positions
+<data-root>/
+  data/
+    <scene-id>/
+      iphone/
+        rgb.mkv                   RGB video
+        depth.bin                 LiDAR depth
+        pose_intrinsic_imu.json   ARKit poses and intrinsics
+      scans/
+        mesh_aligned_0.05.ply     laser mesh (evaluation only)
+      panocam/                    laser panoramas: depth, azim, elev (evaluation only)
 ```
 
-Frame counts match across `rgb.mkv`, `depth.bin` and `pose_intrinsic_imu.json` (7209 for 3e8bba0176).
-Conventions (pose direction, camera axes, intrinsics scaling, depth units) are documented and verified in
-`src/volumetric_reasoning/datasets/scannetpp.py` and `experiments/01_scene_inspection.ipynb`.
+Two data roots are used:
 
-- Dataset website: https://scannetpp.mlsg.cit.tum.de/scannetpp/
-- Official toolkit: https://github.com/scannetpp/scannetpp
+* `data` (default of steps 1–3): the development scene `1ada7a0617`, with laser data.
+* `data/scannetpp` (default of `build_scenes.py`): the 50 QA scenes, iPhone data only.
+
+`qa/` holds the ScanNet++ question-answer pairs from ViCA-322K for these 50 scenes
+(`train/val/test.jsonl`, scene split in `splits.json`: 30 / 5 / 15 scenes). Two changes to the
+original 40 / 5 / 5 split, both recorded in `qa/manifest.json`; the original files are in `qa/original/`:
+
+1. `469f112e38` (poorly reconstructed from 32 frames) moved val → train, `1b379f1114` train → val.
+2. 10 train scenes, drawn at random (seed 0), moved to test for a larger test set.
+
+Download with `data_download/download_scannetpp.py`; access requires a token from the
+[ScanNet++ portal](https://scannetpp.mlsg.cit.tum.de/scannetpp/).
+
+Only this README is tracked under `data/`.
