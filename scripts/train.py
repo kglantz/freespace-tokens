@@ -1,7 +1,9 @@
 """Fine-tune one variant: scene-token embeddings + LoRA on the frozen Qwen3-VL decoder, answer-only loss.
 
-Variants: surface_only, surface_free, surface_unknown, surface_both. Every variant uses the same seed, so the
-same initialization, training examples and example order; they differ only in which box tokens they see.
+Training data: the ViCA questions (full view) and the navigation questions (nav_*.jsonl, every view in which both
+endpoints are seen; see qa_dataset.py). Variants: surface_only, surface_free, surface_unknown, surface_both. Every
+variant uses the same seed, so the same initialization, training examples and example order; they differ only in
+which box tokens they see.
 One example per forward pass (scenes have 1.5k-19k tokens), gradients accumulated over --grad-accum examples.
 After every epoch: validation (generation + VSI-Bench scores) and a checkpoint of the trainable weights;
 best.pt is the epoch with the highest validation mean over tasks.
@@ -9,7 +11,7 @@ best.pt is the epoch with the highest validation mean over tasks.
 Outputs (--output): args.json, log.jsonl (training loss per optimizer step, validation per epoch),
 epoch<k>.pt, best.pt, val_predictions_epoch<k>.jsonl
 
-Usage (from the repo root, after build_scenes.py and extract_features.py):
+Usage (from the repo root, after build_scenes.py and extract_features.py for every view, and make_nav_qa.py):
     venv/bin/python scripts/train.py --variant surface_both --output runs/surface_both
     venv/bin/python scripts/train.py --variant surface_only --train-scenes 10 --output runs/pilot_surface_only
 """
@@ -21,6 +23,7 @@ import math
 import shutil
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -29,7 +32,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from volumetric_reasoning.evaluation import evaluate  # noqa: E402
 from volumetric_reasoning.model import FreeSpaceVLM  # noqa: E402
-from volumetric_reasoning.qa_dataset import VARIANTS, SceneQADataset  # noqa: E402
+from volumetric_reasoning.qa_dataset import ALL_TASKS, VARIANTS, VIEWS, SceneQADataset  # noqa: E402
 
 
 def parse_args(argv=None):
@@ -38,7 +41,6 @@ def parse_args(argv=None):
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--model", default="Qwen/Qwen3-VL-4B-Instruct")
     p.add_argument("--qa-dir", type=Path, default=Path("data/qa"))
-    p.add_argument("--scene-root", type=Path, default=Path("outputs/scenes"))
     p.add_argument("--train-scenes", type=int, default=0, help="Use N random training scenes (0 = all)")
     p.add_argument("--train-limit", type=int, default=0, help="Use N random training examples (0 = all; for tests)")
     p.add_argument("--epochs", type=int, default=2)
@@ -65,8 +67,10 @@ def main(argv=None):
     if args.train_scenes:
         train_ids = sorted(json.loads((args.qa_dir / "splits.json").read_text())["train"])
         scenes = set(rng.choice(train_ids, args.train_scenes, replace=False).tolist())
-    train = SceneQADataset(args.qa_dir / "train.jsonl", args.variant, args.scene_root, args.model, scenes=scenes)
-    val = SceneQADataset(args.qa_dir / "val.jsonl", args.variant, args.scene_root, args.model)
+    def data(split, scenes=None):
+        return SceneQADataset([args.qa_dir / f"{split}.jsonl", args.qa_dir / f"nav_{split}.jsonl"], args.variant,
+                              VIEWS, args.model, tasks=ALL_TASKS, scenes=scenes)
+    train, val = data("train", scenes), data("val")
     pool = np.arange(len(train))
     if args.train_limit:
         pool = np.sort(rng.permutation(len(train))[:args.train_limit])
@@ -75,6 +79,8 @@ def main(argv=None):
     total_steps = math.ceil(n_examples / args.grad_accum)
     print(f"{args.variant}: {len(train)} training examples from {len({r['scene_id'] for r in train.rows})} scenes, "
           f"{args.epochs} epochs, {total_steps} optimizer steps; {len(val)} validation examples; device {device}",
+          flush=True)
+    print("training examples per task / view:", dict(Counter(f"{r['task']}/{v}" for r, v in zip(train.rows, train.views))),
           flush=True)
 
     model = FreeSpaceVLM(args.model, lora_rank=args.lora_rank, lora_alpha=2 * args.lora_rank).to(device)

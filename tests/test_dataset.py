@@ -1,6 +1,8 @@
-"""Checks of qa_dataset.py: VSI-Bench scoring and every example of every split and variant against the files.
+"""Checks of qa_dataset.py / evaluation.py: scoring and summaries, and every example of every split, view and
+variant against the files (ViCA questions; navigation questions with their visibility and endpoint marks).
 
-Run from the repo root after build_scenes.py and extract_features.py:  python tests/test_dataset.py
+Run from the repo root after build_scenes.py and extract_features.py (all views) and make_nav_qa.py:
+    python tests/test_dataset.py
 """
 import json
 import sys
@@ -12,8 +14,10 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from volumetric_reasoning.geometry.labels import FREE, UNKNOWN  # noqa: E402
-from volumetric_reasoning.qa_dataset import (NUMERIC_PROMPT, TASKS, VARIANTS, SceneQADataset,  # noqa: E402
-                                             mean_relative_accuracy, parse_choice, parse_number, score)
+from volumetric_reasoning.evaluation import summarize  # noqa: E402
+from volumetric_reasoning.qa_dataset import (ALL_TASKS, ENDPOINT_PAD, MIN_ENDPOINT_TOKENS, NAV_TASKS,  # noqa: E402
+                                             NUMERIC_PROMPT, TASKS, VARIANTS, VIEWS, SceneQADataset, in_obb,
+                                             mean_relative_accuracy, parse_choice, parse_number, parse_yes_no, score)
 
 MODEL = "Qwen/Qwen3-VL-4B-Instruct"
 
@@ -29,7 +33,35 @@ for text, letter in [("D", "D"), ("D. mug", "D"), ("(B) chair", "B"), ("C)", "C"
     assert parse_choice(text) == letter, (text, parse_choice(text))
 assert score("object_relative_distance", "D. mug", "D. mug") == 1 and score("object_relative_distance", "B", "D. mug") == 0
 assert score("object_count", "three", "3") == 0 and score("object_count", "3", "3") == 1
+for text, word in [("yes", "yes"), ("No.", "no"), (" YES, it can", "yes"), ("no way", "no"), ("Nope", None),
+                   ("Yesterday", None), ("I think yes", None), ("", None)]:
+    assert parse_yes_no(text) == word, (text, parse_yes_no(text))
+assert score("nav_collision", "Yes.", "yes") == 1 and score("nav_collision", "no", "yes") == 0
+assert score("nav_collision", "maybe", "no") == 0 and score("nav_distance", "3.4", "3.4") == 1
 print("1. scoring OK")
+
+# 1a. summaries: collision = balanced accuracy; collision rate = "yes" on truly blocked questions
+def p(task, view, answer, prediction):
+    return {"task": task, "view": view, "answer": answer, "prediction": prediction,
+            "score": score(task, prediction, answer)}
+preds = ([p("nav_collision", "first8", "yes", "yes")] * 3 + [p("nav_collision", "first8", "yes", "no")]
+         + [p("nav_collision", "first8", "no", "yes")] + [p("nav_collision", "first8", "no", "no")]
+         + [p("nav_distance", "full", "2.0", "2.0"), p("nav_distance", "full", "2.0", "4.0"),
+            p("object_count", "full", "3", "3")])
+s = summarize(preds)
+assert s["per_task"] == {"object_count": 1.0, "nav_collision/first8": (3 / 4 + 1 / 2) / 2, "nav_distance/full": 0.5}
+assert s["collision_rate"] == {"nav_collision/first8": 0.5}
+assert s["counts"] == {"object_count": 1, "nav_collision/first8": 6, "nav_distance/full": 2}
+print("1a. summaries OK")
+
+# 1b. oriented boxes: 2 m x 0.4 m x 1 m box at (1, 2, 0.5), rotated 30 degrees about z (rows = box axes)
+c, a = np.array([1.0, 2.0, 0.5]), np.radians(30)
+ax0, ax1 = np.array([np.cos(a), np.sin(a), 0]), np.array([-np.sin(a), np.cos(a), 0])
+obb = {"centroid": c.tolist(), "axesLengths": [2.0, 0.4, 1.0], "normalizedAxes": np.stack([ax0, ax1, [0, 0, 1]]).ravel().tolist()}
+pts = np.stack([c, c + 0.99 * ax0, c + 1.01 * ax0, c + 0.19 * ax1, c + 0.21 * ax1, c + 0.5 * ax1, c + [0, 0, 0.49]])
+assert in_obb(pts, obb).tolist() == [True, True, False, True, False, False, True]
+assert in_obb(pts, obb, pad=0.05).tolist() == [True, True, True, True, True, False, True]
+print("1b. oriented boxes OK")
 
 # 2. every example of every split and variant, cross-checked against the raw files
 for split in ("train", "val", "test"):
@@ -65,3 +97,46 @@ for split in ("train", "val", "test"):
         assert abs((p[:, 0].min() + p[:, 0].max()) / 2) < 1e-4 and abs((p[:, 1].min() + p[:, 1].max()) / 2) < 1e-4
         assert abs(np.percentile(p[:, 2], 1)) < 1e-4
     print(f"2. {split}: {len(rows)} examples x {len(VARIANTS)} variants OK")
+
+# 3. navigation questions: every split, view and variant, against an independent computation from the raw files
+#    (world coordinates straight from tokens.npz, no normalization)
+FEATURES = f"features_{MODEL.split('/')[-1]}.npz"
+for split in ("train", "val", "test"):
+    rows = [json.loads(line) for line in open(ROOT / f"data/qa/nav_{split}.jsonl")]
+    views = {k: ROOT / v for k, v in VIEWS.items()}
+    expected, world = [], {}
+    for r in rows:
+        for view, root in views.items():
+            key = (view, r["scene_id"])
+            if key not in world:
+                t, f = np.load(root / r["scene_id"] / "tokens.npz"), np.load(root / r["scene_id"] / FEATURES)
+                world[key] = t["surface_position"][f["n_pixels"] > 0]
+            a, b = (in_obb(world[key], r[k]["obb"], ENDPOINT_PAD) for k in "ab")
+            if a.sum() >= MIN_ENDPOINT_TOKENS and b.sum() >= MIN_ENDPOINT_TOKENS:
+                expected.append((r["id"], view, a, b))
+    datasets = {v: SceneQADataset(ROOT / f"data/qa/nav_{split}.jsonl", v, views, MODEL, tasks=NAV_TASKS) for v in VARIANTS}
+    for ds in datasets.values():
+        assert [(r["id"], v) for r, v in zip(ds.rows, ds.views)] == [(i, v) for i, v, _, _ in expected]
+    for i, (qid, view, a, b) in enumerate(expected):
+        ex = {v: ds[i] for v, ds in datasets.items()}
+        e = ex["surface_both"]
+        assert e["id"] == qid and e["view"] == view
+        mark = np.where(a, 1, np.where(b, 2, 0))                     # a token in both boxes counts for A
+        assert np.array_equal(e["mark"].numpy(), mark), (qid, view)
+        assert len(e["mark"]) == len(e["surface_feature"]) == len(e["surface_position"])
+        assert e["prompt"].endswith("Answer yes or no.") if e["task"] == "nav_collision" else e["prompt"].endswith(NUMERIC_PROMPT)
+        assert score(e["task"], e["answer"], e["answer"]) == 1.0
+        for v, x in ex.items():                                      # variants differ only in boxes
+            assert x["mark"].equal(e["mark"]) and x["surface_feature"] is e["surface_feature"]
+            assert set(x["box_type"].tolist()) <= set(VARIANTS[v])
+    n = {v: sum(view == v for _, view, _, _ in expected) for v in VIEWS}
+    print(f"3. nav {split}: {len(expected)} examples {n} x {len(VARIANTS)} variants OK")
+
+# 4. ViCA + navigation in one dataset: ViCA in the full view with no marks, then the navigation examples
+vica = [r for r in map(json.loads, open(ROOT / "data/qa/val.jsonl")) if r["task"] in TASKS]
+both = SceneQADataset([ROOT / "data/qa/val.jsonl", ROOT / "data/qa/nav_val.jsonl"], "surface_both",
+                      {k: ROOT / v for k, v in VIEWS.items()}, MODEL, tasks=ALL_TASKS)
+assert [r["id"] for r in both.rows[:len(vica)]] == [r["id"] for r in vica] and set(both.views[:len(vica)]) == {"full"}
+assert all(both.rows[i]["task"] in NAV_TASKS for i in range(len(vica), len(both)))
+assert all(both[i]["mark"].sum() == 0 for i in range(0, len(vica), 50))
+print(f"4. ViCA + navigation: {len(vica)} + {len(both) - len(vica)} examples OK")

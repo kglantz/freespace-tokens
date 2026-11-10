@@ -3,8 +3,10 @@
   1. chat format == Qwen's chat template (with an image in place of the scene) for every training example
   2. scene rotary positions == Qwen's get_rope_index for an image laid out as the same grid
   3. our decoder call == the stock model on plain text
-  4. at initialization: surface token == its Qwen feature, box token == its type embedding
-  5. answer-only loss == cross-entropy over full logits; gradients only reach trainable parameters
+  4. at initialization: surface token == its Qwen feature (+ its mark embedding for navigation endpoints),
+     box token == its type embedding
+  5. answer-only loss == cross-entropy over full logits; gradients only reach trainable parameters; the
+     endpoint marks A / B get gradients, the fixed "no mark" row does not
   6. cached greedy decoding == uncached greedy decoding
   7. overfitting one example the untrained model gets wrong: loss -> ~0, generation reproduces the answer
 
@@ -19,7 +21,7 @@ from torch.nn import functional as F
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from volumetric_reasoning.model import PREFIX, SUFFIX, FreeSpaceVLM, scene_rope_positions  # noqa: E402
-from volumetric_reasoning.qa_dataset import SceneQADataset, load_qa, prompt  # noqa: E402
+from volumetric_reasoning.qa_dataset import NAV_TASKS, VIEWS, SceneQADataset, load_qa, prompt  # noqa: E402
 
 MODEL = "Qwen/Qwen3-VL-4B-Instruct"
 dev = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
@@ -31,7 +33,7 @@ pad = tok.convert_tokens_to_ids("<|image_pad|>")
 # 1. chat format
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration  # noqa: E402
 proc = AutoProcessor.from_pretrained(MODEL)
-rows = load_qa(ROOT / "data/qa/train.jsonl")
+rows = load_qa(ROOT / "data/qa/train.jsonl") + load_qa(ROOT / "data/qa/nav_train.jsonl", NAV_TASKS)
 for r in rows:
     k = 7
     msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": prompt(r)}]},
@@ -40,7 +42,7 @@ for r in rows:
     ours = (m._ids(PREFIX) + [pad] * k + m._ids(SUFFIX.format(prompt=prompt(r))) + m._ids(r["answer"])
             + [m.end_id] + m._ids("\n"))
     assert ours == tok(ref, add_special_tokens=False)["input_ids"], r["id"]
-print(f"1. chat format identical to Qwen's template for all {len(rows)} training examples")
+print(f"1. chat format identical to Qwen's template for all {len(rows)} training questions")
 
 # 2. rotary positions
 stock = Qwen3VLForConditionalGeneration.from_pretrained(MODEL, dtype=torch.bfloat16).to(dev).eval()
@@ -75,7 +77,17 @@ with torch.no_grad():
 ns = len(ex["surface_feature"])
 assert torch.equal(z[:ns], exd["surface_feature"].float())
 assert torch.equal(z[ns:], m.scene_encoder.kind.weight[torch.where(exd["box_type"] == 1, 1, 2)])
-print(f"4. init: {ns} surface tokens == Qwen features, {len(z) - ns} boxes == type embeddings")
+nav = SceneQADataset(ROOT / "data/qa/nav_train.jsonl", "surface_both", {k: ROOT / v for k, v in VIEWS.items()}, MODEL,
+                     tasks=NAV_TASKS, scenes={"81a82c3618", "3d838ee1ab"})
+exn = min((nav[i] for i in range(len(nav))), key=lambda e: len(e["surface_feature"]) + len(e["box_type"]))  # fits a Mac
+with torch.no_grad():
+    zn = m.scene_encoder({k: v.to(dev) if torch.is_tensor(v) else v for k, v in exn.items()})
+mk = exn["mark"].to(dev)
+assert (mk == 1).sum() >= 3 and (mk == 2).sum() >= 3
+assert torch.equal(zn[:len(mk)], exn["surface_feature"].to(dev).float() + m.scene_encoder.mark.weight[mk])
+assert torch.equal(zn[:len(mk)][mk == 0], exn["surface_feature"].to(dev).float()[mk == 0])
+print(f"4. init: {ns} surface tokens == Qwen features, {len(z) - ns} boxes == type embeddings; "
+      f"marked endpoint tokens == feature + mark ({int((mk > 0).sum())} of {len(mk)})")
 
 # 5. loss and gradients
 x, pos, n = m.inputs(ex, answer=True)
@@ -90,7 +102,12 @@ assert not [k for k, p in m.named_parameters() if not p.requires_grad and p.grad
 assert all(("lora_" in k) or k.startswith("scene_encoder.") for k, p in m.named_parameters() if p.requires_grad)
 # zero-initialized output layers: their branch's first layer (and LoRA A) gets no gradient at step 0
 first = {f"scene_encoder.{b}.{w}" for b in ("adapter.0", "position.mlp.0", "size.mlp.0") for w in ("weight", "bias")}
+first.add("scene_encoder.mark.weight")   # a ViCA example has no marked tokens
 assert all("lora_A" in k or k in first for k in no_grad), no_grad
+m.zero_grad(set_to_none=True)
+m.loss(exn).backward()                   # navigation example: marks A and B get gradients, "no mark" does not
+g = m.scene_encoder.mark.weight.grad
+assert g[0].abs().sum() == 0 and g[1].abs().sum() > 0 and g[2].abs().sum() > 0
 m.zero_grad(set_to_none=True)
 print(f"5. loss == full-logit cross-entropy; gradients only on the "
       f"{sum(p.numel() for p in m.parameters() if p.requires_grad) / 1e6:.1f} M trainable parameters")
@@ -117,6 +134,10 @@ with torch.no_grad():
         if "lora_B" in k:
             p.copy_(saved[k])
 print(f"6. cached decoding == uncached decoding ({cached!r})")
+
+del nav, exn, zn, mk, g   # free memory before the overfitting test (matters on a Mac)
+if dev == "mps":
+    torch.mps.empty_cache()
 
 # 7. overfit the distance question of 81a82c3618 that the untrained model answers wrongly (1.0 instead of 1.3)
 ex = next(ds[i] for i in range(len(ds)) if ds.rows[i]["task"] == "object_abs_distance")

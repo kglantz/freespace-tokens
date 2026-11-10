@@ -6,12 +6,14 @@ Sequence (Qwen3-VL chat format, scene tokens where an image's tokens would be):
     {answer}<|im_end|>
 
 Scene token embeddings (trainable parts marked *):
-    surface: f + A*(f) + phi*(p) + e*_surface     f = pooled frozen Qwen3-VL image feature (already in the
-                                                    decoder's embedding space), A = residual MLP
+    surface: f + A*(f) + phi*(p) + e*_surface + m*  f = pooled frozen Qwen3-VL image feature (already in the
+                                                    decoder's embedding space), A = residual MLP,
+                                                    m = mark of navigation endpoint A / B (0 for other tokens)
     box:     psi*(size) + phi*(center) + e*_type  type = free or unknown
 phi is shared by all scene tokens. A, phi and psi end in zero-initialized layers and e_surface starts at 0, so at
-initialization a surface token is exactly the Qwen visual token of its block; box tokens start as their type
-embedding (word-embedding scale). Box extent is encoded in the content (psi), position in phi and in RoPE.
+initialization a surface token is exactly the Qwen visual token of its block (plus its mark embedding if it belongs
+to an endpoint; the "no mark" row is fixed at 0); box tokens start as their type embedding (word-embedding scale).
+Box extent is encoded in the content (psi), position in phi and in RoPE.
 
 3-D rotary positions follow Qwen3-VL's image convention. An image starting at sequence position s puts merged
 patch (row, col) at (t, h, w) = (s, s + row, s + col), and the following text continues at s + max(H, W).
@@ -68,13 +70,18 @@ class SceneEncoder(nn.Module):
         self.size = Fourier(hidden)
         self.kind = nn.Embedding(3, hidden)
         nn.init.normal_(self.kind.weight, std=word_std)
+        self.mark = nn.Embedding(3, hidden, padding_idx=0)  # 0 = no mark (stays 0), 1 = endpoint A, 2 = endpoint B
+        nn.init.normal_(self.mark.weight, std=word_std)
         with torch.no_grad():
             self.kind.weight[0].zero_()
+            self.mark.weight[0].zero_()
 
     def forward(self, ex) -> torch.Tensor:
         """(Ns + Nb, hidden) embeddings: surface tokens, then boxes (order of the example)."""
         f = ex["surface_feature"].float()
         surface = f + self.adapter(f) + self.position(ex["surface_position"]) + self.kind.weight[0]
+        if "mark" in ex:
+            surface = surface + self.mark(ex["mark"])
         t = torch.zeros_like(ex["box_type"])
         for label, index in self.TYPE_INDEX.items():
             t[ex["box_type"] == label] = index

@@ -1,4 +1,4 @@
-"""Evaluate a trained variant on a QA split (greedy generation, VSI-Bench scores).
+"""Evaluate a trained variant on a QA split: ViCA and navigation questions, every view (greedy generation).
 
 Reads the run's args.json for the variant, model and LoRA rank, loads the checkpoint's trainable weights and
 writes <run>/<split>_predictions.jsonl and <run>/<split>_summary.json.
@@ -18,7 +18,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from volumetric_reasoning.evaluation import evaluate  # noqa: E402
 from volumetric_reasoning.model import FreeSpaceVLM  # noqa: E402
-from volumetric_reasoning.qa_dataset import SceneQADataset  # noqa: E402
+from volumetric_reasoning.qa_dataset import ALL_TASKS, VIEWS, SceneQADataset  # noqa: E402
 
 
 def main():
@@ -33,7 +33,9 @@ def main():
 
     model = FreeSpaceVLM(run["model"], lora_rank=run["lora_rank"], lora_alpha=2 * run["lora_rank"]).to(device)
     model.load_trainable_state_dict(torch.load(args.run / args.checkpoint, map_location=device))
-    data = SceneQADataset(Path(run["qa_dir"]) / f"{args.split}.jsonl", run["variant"], run["scene_root"], run["model"])
+    qa = Path(run["qa_dir"])
+    data = SceneQADataset([qa / f"{args.split}.jsonl", qa / f"nav_{args.split}.jsonl"], run["variant"], VIEWS,
+                          run["model"], tasks=ALL_TASKS)
     preds, summary = evaluate(model, data, args.limit)
     summary = {"run": str(args.run), "checkpoint": args.checkpoint, "split": args.split, "variant": run["variant"],
                **summary}

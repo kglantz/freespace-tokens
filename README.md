@@ -34,19 +34,39 @@ venv/bin/python scripts/build_scenes.py --jobs 4   # -> outputs/scenes/<scene>/{
 venv/bin/python scripts/extract_features.py        # -> outputs/scenes/<scene>/features_<model>.npz
 ```
 
+Partial views (what a robot has seen after a quarter / half of the walk: the first 8 / 16 of the 32 frames):
+
+```bash
+venv/bin/python scripts/build_scenes.py --jobs 4 --first 8 --output outputs/scenes_first8
+venv/bin/python scripts/extract_features.py --scene-root outputs/scenes_first8
+# same with --first 16 / outputs/scenes_first16
+```
+
+Navigation questions with ground truth from the laser scan and its annotations (`data/README.md`):
+
+```bash
+venv/bin/python scripts/make_nav_qa.py --render outputs/nav_qa   # -> data/qa/nav_{train,val,test}.jsonl
+venv/bin/python tests/test_nav_qa.py
+```
+
 ## Training and evaluation
 
 Qwen3-VL-4B decoder (frozen, LoRA on attention) reading the scene tokens in place of image tokens; answer-only
-loss; 3-D rotary positions in Qwen's image convention (see `src/volumetric_reasoning/model.py`). One run per
-variant (`surface_only`, `surface_free`, `surface_unknown`, `surface_both`), all with the same seed:
+loss; 3-D rotary positions in Qwen's image convention (see `src/volumetric_reasoning/model.py`). Training and
+evaluation use the ViCA questions (full view) and the navigation questions (all three views, endpoints marked as
+A / B in the input). One run per variant (`surface_only`, `surface_free`, `surface_unknown`, `surface_both`), all
+with the same seed:
 
 ```bash
 venv/bin/python scripts/train.py --variant surface_both --output runs/surface_both     # --train-scenes 10 for a pilot
 venv/bin/python scripts/evaluate.py --run runs/surface_both --split test
 ```
 
-Each run validates and checkpoints after every epoch (`best.pt` = best validation mean over tasks). Scores are the
-VSI-Bench metrics: option accuracy (relative distance) and mean relative accuracy (distance, size, count, room size).
+Each run validates and checkpoints after every epoch (`best.pt` = best validation mean over tasks). Scores: the
+VSI-Bench metrics for ViCA (option accuracy for relative distance, mean relative accuracy for distance, size, count,
+room size); per view for navigation: balanced accuracy and collision rate ("yes" on blocked paths) for
+`nav_collision`, mean relative accuracy for `nav_distance`. `scripts/headroom.py` scores hand-made rules on the
+same navigation questions (how much free / unknown tokens can tell beyond surface tokens, without learning).
 
 ```bash
 python -m venv venv && venv/bin/pip install -r requirements.txt
@@ -68,7 +88,8 @@ venv/bin/python scripts/step3_tokens.py --scene 1ada7a0617
 | `geometry/block_tokens.py` | Block labels, surface tokens, box merging |
 | `geometry/labels.py` | Label constants |
 | `features.py` | Frozen Qwen3-VL image features, mean-pooled per surface block |
-| `qa_dataset.py` | QA examples with scene tokens per variant; VSI-Bench scoring |
+| `qa_dataset.py` | QA examples (ViCA + navigation) with scene tokens per variant and view; endpoint marks; scoring |
+| `nav_qa.py` | Navigation questions with ground truth from the laser scan |
 | `model.py` | Scene-token embeddings, 3-D RoPE positions, LoRA Qwen3-VL decoder, loss, greedy decoding |
 | `evaluation.py` | Generation + scoring of a dataset |
 | `render3d.py` | Shared 3D rendering for figures |
