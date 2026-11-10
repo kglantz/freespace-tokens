@@ -8,6 +8,6 @@ Please **clear outputs before committing** notebooks (embedded figures bloat the
 
 | Notebook | Purpose |
 |---|---|
-| `10_free_space_boxes.ipynb` | How free / unknown blocks are merged into box tokens: step-by-step box growth, box size / shape statistics, dependence on growth order, size cap and block size |
+| `10_free_space_boxes.ipynb` | How free / unknown blocks are merged into box tokens: step-by-step box growth, box size / shape statistics, dependence on growth order, size cap and block size; which surface blocks get image features |
 
 `old/` holds the notebooks of the earlier dense-TSDF pipeline (see `old/README.md`).
